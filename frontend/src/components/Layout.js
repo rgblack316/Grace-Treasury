@@ -10,7 +10,8 @@ import {
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
 import { Landmark, LayoutDashboard, ListOrdered, FileText, Settings as SettingsIcon, LogOut, Plus, User } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import api from "@/lib/api";
 import TransactionDialog from "@/components/TransactionDialog";
 
 const tabs = [
@@ -23,6 +24,11 @@ const tabs = [
 export default function Layout() {
   const { user, logout } = useAuth();
   const [quickOpen, setQuickOpen] = useState(false);
+  const [churchName, setChurchName] = useState("Church Treasury");
+
+  useEffect(() => {
+    api.get("/settings/church").then((r) => r.data?.church_name && setChurchName(r.data.church_name)).catch(() => {});
+  }, []);
 
   return (
     <div className="min-h-screen bg-background">
@@ -32,7 +38,7 @@ export default function Layout() {
             <div className="h-9 w-9 rounded-lg bg-[#1E293B] grid place-items-center">
               <Landmark className="h-5 w-5 text-[#D97706]" />
             </div>
-            <span className="font-serif text-lg font-semibold text-slate-900 hidden sm:block">Grace Treasury</span>
+            <span className="font-serif text-lg font-semibold text-slate-900 hidden sm:block truncate max-w-[220px]">{churchName}</span>
           </div>
 
           <nav className="flex items-center gap-1">

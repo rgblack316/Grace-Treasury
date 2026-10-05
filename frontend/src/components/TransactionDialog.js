@@ -7,6 +7,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -118,6 +119,7 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
           <DialogTitle className="font-serif text-xl">
             {editing ? "Edit Transaction" : "Record a Transaction"}
           </DialogTitle>
+          <DialogDescription>Record income, an expense, or a transfer between accounts.</DialogDescription>
         </DialogHeader>
 
         <div className="grid grid-cols-3 gap-2">
