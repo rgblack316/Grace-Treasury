@@ -21,7 +21,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, Pencil, Trash2, Save, Download, Upload, ShieldCheck, Loader2, AlertTriangle } from "lucide-react";
+import { Plus, Pencil, Trash2, Save, Download, Upload, ShieldCheck, Loader2, AlertTriangle, Mail, Send } from "lucide-react";
 
 const PW_HINT = "At least 12 characters with uppercase, lowercase, a number, and a symbol.";
 const strongPw = (p) => p.length >= 12 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /\d/.test(p) && /[^A-Za-z0-9]/.test(p);
@@ -424,6 +424,72 @@ function UsersTab({ me }) {
   );
 }
 
+function EmailBackupCard() {
+  const [cfg, setCfg] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => { api.get("/settings/email").then((r) => setCfg(r.data)).catch(() => {}); }, []);
+  if (!cfg) return null;
+  const set = (k, v) => setCfg({ ...cfg, [k]: v });
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body = {
+        enabled: cfg.enabled, smtp_host: cfg.smtp_host || "", smtp_port: Number(cfg.smtp_port || 587),
+        smtp_username: cfg.smtp_username || "", use_tls: cfg.use_tls, from_address: cfg.from_address || "", to_address: cfg.to_address || "",
+      };
+      if (cfg.smtp_password) body.smtp_password = cfg.smtp_password;
+      await api.put("/settings/email", body);
+      const { data } = await api.get("/settings/email");
+      setCfg(data);
+      toast.success("Email settings saved");
+    } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
+    finally { setSaving(false); }
+  };
+
+  const sendTest = async () => {
+    setTesting(true);
+    try { await api.post("/email/test"); toast.success("Test email sent — check the inbox"); }
+    catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
+    finally { setTesting(false); }
+  };
+
+  return (
+    <Card className="p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <div><h3 className="font-serif text-lg font-semibold text-slate-900 flex items-center gap-2"><Mail className="h-5 w-5 text-[#B45309]" />Email Backups</h3>
+          <p className="text-sm text-muted-foreground">Automatically email each nightly backup to the treasurer for off-site safekeeping, using your own email (SMTP) account.</p></div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <span className="text-sm text-muted-foreground">Enabled</span>
+          <Switch checked={!!cfg.enabled} onCheckedChange={(v) => set("enabled", v)} data-testid="email-enabled-switch" />
+        </label>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>SMTP Host</Label><Input value={cfg.smtp_host || ""} onChange={(e) => set("smtp_host", e.target.value)} placeholder="smtp.gmail.com" data-testid="email-host-input" /></div>
+        <div className="space-y-1.5"><Label>Port</Label><Input type="number" value={cfg.smtp_port || 587} onChange={(e) => set("smtp_port", e.target.value)} placeholder="587" data-testid="email-port-input" /></div>
+        <div className="space-y-1.5"><Label>Username</Label><Input value={cfg.smtp_username || ""} onChange={(e) => set("smtp_username", e.target.value)} placeholder="you@gmail.com" data-testid="email-username-input" /></div>
+        <div className="space-y-1.5"><Label>Password {cfg.has_password && <span className="text-xs text-muted-foreground">(saved — leave blank to keep)</span>}</Label><Input type="password" value={cfg.smtp_password || ""} onChange={(e) => set("smtp_password", e.target.value)} placeholder={cfg.has_password ? "••••••••" : "app password"} data-testid="email-password-input" /></div>
+        <div className="space-y-1.5"><Label>From Address</Label><Input value={cfg.from_address || ""} onChange={(e) => set("from_address", e.target.value)} placeholder="treasury@yourchurch.org" data-testid="email-from-input" /></div>
+        <div className="space-y-1.5"><Label>Send To (treasurer)</Label><Input value={cfg.to_address || ""} onChange={(e) => set("to_address", e.target.value)} placeholder="treasurer@yourchurch.org" data-testid="email-to-input" /></div>
+      </div>
+      <label className="flex items-center gap-2 cursor-pointer w-fit">
+        <Switch checked={cfg.use_tls !== false} onCheckedChange={(v) => set("use_tls", v)} data-testid="email-tls-switch" />
+        <span className="text-sm">Use STARTTLS (recommended for port 587; use port 465 for SSL)</span>
+      </label>
+      <div className="flex flex-wrap gap-3">
+        <Button onClick={save} disabled={saving} className="bg-[#1E293B] hover:bg-[#0F172A]" data-testid="btn-save-email-cfg">
+          {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}Save Email Settings
+        </Button>
+        <Button onClick={sendTest} disabled={testing} variant="outline" data-testid="btn-send-test-email">
+          {testing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Send className="h-4 w-4 mr-2" />}Send Test Email
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function BackupTab() {
   const [exporting, setExporting] = useState(false);
   const [file, setFile] = useState(null);
@@ -557,6 +623,8 @@ function BackupTab() {
           </div>
         </Card>
       )}
+
+      <EmailBackupCard />
 
       <Card className="p-5">
         <h3 className="font-serif text-lg font-semibold text-slate-900 mb-3">Saved Backups on Server</h3>

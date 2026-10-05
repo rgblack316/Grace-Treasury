@@ -15,6 +15,9 @@ import logging
 import csv
 import json
 import glob
+import asyncio
+import smtplib
+from email.message import EmailMessage
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 import uuid
@@ -1266,7 +1269,8 @@ async def run_backup() -> str:
 async def scheduled_backup_job():
     cfg = await get_backup_settings()
     if cfg.get("enabled", True):
-        await run_backup()
+        fname = await run_backup()
+        await maybe_email_backup(fname)
 
 
 async def reschedule_backup():
@@ -1366,6 +1370,158 @@ async def restore_backup(name: str, user: dict = Depends(require_data)):
             await db[coll].insert_many(docs)
         counts[coll] = len(docs)
     return {"ok": True, "restored": counts}
+
+
+# ----------------------------- Email backups (SMTP) -----------------------------
+DEFAULT_EMAIL_SETTINGS = {
+    "id": "email", "enabled": False, "smtp_host": "", "smtp_port": 587,
+    "smtp_username": "", "smtp_password": "", "use_tls": True,
+    "from_address": "", "to_address": "",
+}
+
+
+class EmailConfig(BaseModel):
+    enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: Optional[str] = None  # None/omitted = keep existing
+    use_tls: bool = True
+    from_address: str = ""
+    to_address: str = ""
+
+
+async def get_email_settings() -> dict:
+    doc = await db.settings.find_one({"id": "email"}, {"_id": 0})
+    if not doc:
+        doc = dict(DEFAULT_EMAIL_SETTINGS)
+        await db.settings.update_one({"id": "email"}, {"$set": doc}, upsert=True)
+    return doc
+
+
+def _send_email_sync(cfg: dict, subject: str, body: str, att_name=None, att_bytes=None):
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = cfg.get("from_address") or cfg.get("smtp_username")
+    msg["To"] = cfg.get("to_address")
+    msg.set_content(body)
+    if att_bytes is not None:
+        msg.add_attachment(att_bytes, maintype="application", subtype="json", filename=att_name)
+    host = cfg.get("smtp_host")
+    port = int(cfg.get("smtp_port") or 587)
+    username = cfg.get("smtp_username") or ""
+    password = cfg.get("smtp_password") or ""
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, timeout=30) as s:
+            if username:
+                s.login(username, password)
+            s.send_message(msg)
+    else:
+        with smtplib.SMTP(host, port, timeout=30) as s:
+            if cfg.get("use_tls", True):
+                s.starttls()
+            if username:
+                s.login(username, password)
+            s.send_message(msg)
+
+
+async def maybe_email_backup(fname: str):
+    cfg = await get_email_settings()
+    if not cfg.get("enabled") or not cfg.get("smtp_host") or not cfg.get("to_address"):
+        return
+    try:
+        full = os.path.join(BACKUP_DIR, fname)
+        with open(full, "rb") as f:
+            data = f.read()
+        church = await db.settings.find_one({"id": "church"}, {"_id": 0}) or {}
+        name = church.get("church_name") or "Church Treasury"
+        await asyncio.to_thread(
+            _send_email_sync, cfg,
+            f"{name} — Treasury backup {fname}",
+            f"Attached is the automatic database backup from {name}.\n\nFile: {fname}\nKeep this somewhere safe for off-site safekeeping.",
+            fname, data,
+        )
+        logger.info(f"Backup emailed to {cfg['to_address']}")
+    except Exception as e:
+        logger.error(f"Backup email failed: {e}")
+
+
+@api_router.get("/settings/email")
+async def get_email_config(user: dict = Depends(require_data)):
+    cfg = await get_email_settings()
+    return {
+        "enabled": cfg.get("enabled", False),
+        "smtp_host": cfg.get("smtp_host", ""),
+        "smtp_port": cfg.get("smtp_port", 587),
+        "smtp_username": cfg.get("smtp_username", ""),
+        "use_tls": cfg.get("use_tls", True),
+        "from_address": cfg.get("from_address", ""),
+        "to_address": cfg.get("to_address", ""),
+        "has_password": bool(cfg.get("smtp_password")),
+    }
+
+
+@api_router.put("/settings/email")
+async def update_email_config(data: EmailConfig, user: dict = Depends(require_data)):
+    existing = await get_email_settings()
+    doc = {
+        "id": "email",
+        "enabled": data.enabled,
+        "smtp_host": data.smtp_host.strip(),
+        "smtp_port": int(data.smtp_port or 587),
+        "smtp_username": data.smtp_username.strip(),
+        "use_tls": data.use_tls,
+        "from_address": data.from_address.strip(),
+        "to_address": data.to_address.strip(),
+        "smtp_password": existing.get("smtp_password", "") if data.smtp_password in (None, "") else data.smtp_password,
+    }
+    await db.settings.update_one({"id": "email"}, {"$set": doc}, upsert=True)
+    return {"ok": True}
+
+
+@api_router.post("/email/test")
+async def send_test_email(user: dict = Depends(require_data)):
+    cfg = await get_email_settings()
+    if not cfg.get("smtp_host") or not cfg.get("to_address"):
+        raise HTTPException(status_code=400, detail="Please set at least an SMTP host and a recipient address, then save.")
+    try:
+        await asyncio.to_thread(
+            _send_email_sync, cfg,
+            "Grace Treasury — test email",
+            "This is a test email from your Grace Treasury app. If you received this, backup emailing is configured correctly.",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not send email: {e}")
+    return {"ok": True}
+
+
+@api_router.post("/backups/{name}/email")
+async def email_backup(name: str, user: dict = Depends(require_data)):
+    base = _safe_backup_name(name)
+    if not os.path.exists(os.path.join(BACKUP_DIR, base)):
+        raise HTTPException(status_code=404, detail="Backup not found")
+    cfg = await get_email_settings()
+    if not cfg.get("smtp_host") or not cfg.get("to_address"):
+        raise HTTPException(status_code=400, detail="Email is not configured. Set it up under Email Backups first.")
+    try:
+        await maybe_email_backup_force(base, cfg)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not send email: {e}")
+    return {"ok": True}
+
+
+async def maybe_email_backup_force(fname: str, cfg: dict):
+    full = os.path.join(BACKUP_DIR, fname)
+    with open(full, "rb") as f:
+        data = f.read()
+    church = await db.settings.find_one({"id": "church"}, {"_id": 0}) or {}
+    name = church.get("church_name") or "Church Treasury"
+    await asyncio.to_thread(
+        _send_email_sync, cfg,
+        f"{name} — Treasury backup {fname}",
+        f"Attached is a database backup from {name}.\n\nFile: {fname}",
+        fname, data,
+    )
 
 
 @api_router.get("/")
