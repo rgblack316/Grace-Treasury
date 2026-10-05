@@ -8,6 +8,7 @@ Self-hosted accounting app for a church treasurer (Providence Baptist Church) to
 - **Frontend**: React 19 + CRACO, Tailwind, shadcn/ui, Spectral/IBM Plex Sans/JetBrains Mono fonts.
 - **Auth**: JWT Bearer tokens (localStorage key `ct_token`), bcrypt password hashing. First user = admin/treasurer.
 - **PDF**: reportlab server-side (`/api/reports/treasurer/pdf`), letter size.
+- **File storage**: Emergent object storage (receipts), DB `files` collection is source of truth with soft-delete.
 
 ## User Personas
 - **Treasurer (admin)**: records transactions, runs reports, manages users and all settings.
@@ -19,27 +20,28 @@ Self-hosted accounting app for a church treasurer (Providence Baptist Church) to
 - Record income / expense (Check #, Payee, Memo) / transfer.
 - Transaction list: search, filter (account/type/fund/category/date), edit, delete.
 - Dashboard: per-account + per-fund balances, recent activity.
-- Monthly treasurer's report: custom date range + presets, selectable accounts, printable + PDF, optional category/fund sections. Balance Forward / Total Income / Less Expenses / New Balance reconcile.
+- Monthly treasurer's report: custom date range + presets, selectable accounts, printable + PDF, optional category/fund sections. Reconciles.
 
-## Implemented (2026-06 / MVP complete)
+## Implemented
+### 2026-06 — MVP
 - JWT auth, admin seeding (rgblack@gmail.com), user management (admin-only).
 - Accounts/Funds/Categories/Payees/COA CRUD + Church Info settings.
-- Income/Expense/Transfer recording via dialog; transactions list with filters/search/edit/delete.
+- Income/Expense/Transfer recording; transaction list with filters/search/edit/delete.
 - Dashboard with balances + recent activity.
 - Treasurer's report (on-screen, print CSS, server-side PDF) with reconciliation verified.
-- Seeded 3 accounts, 3 funds, categories, payees, COA, and sample June 2026 transactions (from uploaded spreadsheet).
-- Header derives church name from settings.
-- Verified: 24/24 backend tests pass; all critical frontend flows pass.
+- Seeded 3 accounts, 3 funds, categories, payees, COA, sample June 2026 transactions.
+
+### 2026-06 — Iteration 2 (CSV Import, Reconciliation, Receipts)
+- **CSV Import**: template download + upload (`/api/import/transactions`); auto-creates payees/categories/funds; reports skipped rows with reasons. UI: ImportDialog on Transactions page.
+- **Bank Reconciliation**: per-transaction `cleared` flag (`PATCH /api/transactions/{id}/cleared`), per-account reconcile summary (`/api/accounts/{id}/reconcile`) with running cleared balance. UI: reconcile bar + cleared checkbox column.
+- **Receipt Attachments**: upload photos (JPG/PNG/HEIC/WEBP) + PDF to any transaction via Emergent object storage; list/view/delete; paperclip indicator in list; soft-delete on transaction delete. Endpoints under `/api/transactions/{id}/attachments` and `/api/attachments/{id}`.
+- Verified: 34/34 backend tests pass; all critical frontend flows pass.
 
 ## Backlog
 ### P1
 - Budgets per category/fund + budget-vs-actual.
-- Bank reconciliation (mark cleared, reconcile to statement balance).
-- CSV/spreadsheet import.
-- Attach receipts/images to transactions (object storage).
-
-### P2
 - Year-end & giving-statement reports.
+### P2
 - Recurring transactions.
 - Audit log (who changed what).
 - Data export/backup tools for self-hosting.
@@ -47,4 +49,5 @@ Self-hosted accounting app for a church treasurer (Providence Baptist Church) to
 
 ## Notes
 - CORS currently `*`; tighten origins before production (low risk — Bearer auth, not cookies).
+- Download endpoint accepts `?auth=<jwt>` for img/window.open; validates signature (single-tenant scope).
 - Sample June 2026 transactions on *3217 are demo data and deletable.

@@ -95,16 +95,29 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
   };
 
   const viewExisting = async (f) => {
-    const res = await api.get(`/attachments/${f.id}/download`, { responseType: "blob" });
-    const url = window.URL.createObjectURL(res.data);
-    window.open(url, "_blank");
-    setTimeout(() => window.URL.revokeObjectURL(url), 60000);
+    try {
+      let res;
+      try {
+        res = await api.get(`/attachments/${f.id}/download`, { responseType: "blob" });
+      } catch {
+        res = await api.get(`/attachments/${f.id}/download`, { responseType: "blob" });
+      }
+      const url = window.URL.createObjectURL(res.data);
+      window.open(url, "_blank");
+      setTimeout(() => window.URL.revokeObjectURL(url), 60000);
+    } catch {
+      toast.error("Could not open the receipt. Please try again.");
+    }
   };
 
   const deleteExisting = async (f) => {
-    await api.delete(`/attachments/${f.id}`);
-    setExisting((e) => e.filter((x) => x.id !== f.id));
-    toast.success("Receipt removed");
+    try {
+      await api.delete(`/attachments/${f.id}`);
+      setExisting((e) => e.filter((x) => x.id !== f.id));
+      toast.success("Receipt removed");
+    } catch {
+      toast.error("Could not remove the receipt. Please try again.");
+    }
   };
 
   const submit = async () => {
