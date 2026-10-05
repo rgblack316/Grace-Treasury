@@ -166,4 +166,9 @@ your server except the email you send through your own provider.
 
 ## 📄 License
 
-Provided as-is for church and non-profit use. See `LICENSE` if included.
+This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
+
+You are free to use, modify, and distribute this software, provided that any
+distributed derivative works are also released under the GPL-3.0. The software
+is provided "as is", without warranty of any kind. See the full text in the
+[`LICENSE`](./LICENSE) file.

@@ -90,3 +90,12 @@ credentials.json
 *.key
 .credentials
 
+# Platform / build-tool artifacts (kept locally, excluded from the public repo)
+.emergent/
+.gitconfig
+.ruff_cache/
+plan/
+memory/
+test_reports/
+auth_testing.md
+
