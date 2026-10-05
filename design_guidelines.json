@@ -1,0 +1,172 @@
+{
+  "project_name": "Grace Treasury - Church Financial Management System",
+  "app_type": "hybrid_fullstack",
+  "theme": "Light Theme Default with Soft Warm Sanctuary Palette and Dark Mode Toggle",
+  "archetype": "Organic & Earthy + High Precision Non-Profit Financial Ledger",
+  "typography": {
+    "font_family_heading": "'Spectral', 'Merriweather', 'Georgia', serif",
+    "font_family_body": "'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    "font_family_mono": "'JetBrains Mono', 'Fira Code', monospace",
+    "hierarchy": {
+      "h1_hero": "text-3xl sm:text-4xl lg:text-5xl font-serif font-bold tracking-tight text-slate-900",
+      "h2_section": "text-xl sm:text-2xl lg:text-3xl font-serif font-semibold text-slate-900 tracking-tight",
+      "h3_card_title": "text-lg sm:text-xl font-sans font-semibold text-slate-800",
+      "h4_sub": "text-base font-sans font-medium text-slate-700",
+      "body_text": "text-sm sm:text-base font-sans text-slate-700 leading-relaxed",
+      "caption_label": "text-xs font-sans font-semibold uppercase tracking-wider text-slate-500",
+      "tabular_currency": "font-mono font-medium tracking-tight"
+    }
+  },
+  "colors": {
+    "background_default": "#FDFBF7",
+    "background_paper": "#FFFFFF",
+    "background_muted": "#F4F0E8",
+    "background_dark": "#0F172A",
+    "card_border": "#E5E0D8",
+    "card_border_subtle": "#EEEDE7",
+    "text_primary": "#1E293B",
+    "text_secondary": "#64748B",
+    "text_muted": "#94A3B8",
+    "primary_navy": {
+      "50": "#F0F4F8",
+      "100": "#D9E2EC",
+      "500": "#334155",
+      "700": "#1E293B",
+      "900": "#0F172A"
+    },
+    "warm_brass_amber": {
+      "100": "#FEF3C7",
+      "500": "#D97706",
+      "600": "#B45309",
+      "800": "#78350F"
+    },
+    "financial_indicators": {
+      "income_green": "#15803D",
+      "income_bg": "#F0FDF4",
+      "income_border": "#BBF7D0",
+      "expense_red": "#B91C1C",
+      "expense_bg": "#FEF2F2",
+      "expense_border": "#FECACA",
+      "transfer_blue": "#1D4ED8",
+      "transfer_bg": "#EFF6FF",
+      "transfer_border": "#BFDBFE"
+    }
+  },
+  "layout_and_spacing": {
+    "page_container": "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-8",
+    "header_nav": "sticky top-0 z-50 bg-[#FDFBF7]/90 backdrop-blur-md border-b border-[#E5E0D8] px-4 sm:px-8 py-3.5 flex items-center justify-between",
+    "bento_dashboard": "grid grid-cols-1 md:grid-cols-12 gap-6",
+    "dashboard_card_spans": {
+      "accounts_summary": "col-span-full lg:col-span-8",
+      "quick_actions": "col-span-full md:col-span-6 lg:col-span-4",
+      "fund_balances": "col-span-full md:col-span-6 lg:col-span-5",
+      "recent_transactions": "col-span-full lg:col-span-7"
+    },
+    "card_style": "bg-white border border-[#E5E0D8] rounded-xl shadow-xs hover:shadow-sm transition-all duration-200 p-5 sm:p-6"
+  },
+  "components": {
+    "navigation_bar": {
+      "description": "Top fixed header with Church Logo/Name, Treasurer identity badge, primary tabs (Dashboard, Transactions, Monthly Report, Settings), and Quick Entry CTA.",
+      "tab_items": [
+        {"name": "Dashboard", "path": "/", "testid": "nav-item-dashboard"},
+        {"name": "Transactions", "path": "/transactions", "testid": "nav-item-transactions"},
+        {"name": "Monthly Report", "path": "/reports", "testid": "nav-item-reports"},
+        {"name": "Settings", "path": "/settings", "testid": "nav-item-settings"}
+      ]
+    },
+    "bank_accounts_overview": {
+      "description": "Cards displaying the 3 primary bank accounts (Operating Checking, Building Savings, Memorial/Missions Escrow) with ability to add/edit/manage accounts.",
+      "features": ["Per-account current balance", "Reconciled badge", "Last transaction date", "Quick filter link to transactions for this account"]
+    },
+    "fund_accounting_tracker": {
+      "description": "Fund balances breakdown (General Fund, Building Fund, Missions & Outreach, Youth Ministry, Benevolence, Choir/Music). Shows restricted vs unrestricted funds.",
+      "features": ["Target allocation bars", "Beginning balance vs Ending balance", "Direct filter link"]
+    },
+    "transaction_form_modal": {
+      "description": "Modal or slide-over drawer for recording Income, Expense, or Transfer.",
+      "fields": [
+        "Transaction Type (Income, Expense, Transfer)",
+        "Date (Shadcn Popover + Calendar)",
+        "Check Number (Optional for Expense)",
+        "Payee / Vendor / Contributor (Select + Auto-suggest + Add New)",
+        "Bank Account (Dropdown from 3+ configured accounts)",
+        "Fund (General, Building, Missions, Youth, Benevolence)",
+        "Category / Chart of Accounts (Tithe, Donation, Utility, Maintenance, Staff Salary, Literature)",
+        "Amount (USD tabular format input)",
+        "Memo / Notes",
+        "Reconciled checkbox"
+      ]
+    },
+    "transactions_table": {
+      "description": "Searchable, filterable ledger with instant keyword search, date range filter, account filter, fund filter, category filter, and check number filter.",
+      "features": ["Row actions: Edit, Delete, Duplicate", "Check # badge", "Color-coded income (+)/expense (-) text", "Pagination & row count", "Export to CSV/Excel"]
+    },
+    "monthly_treasurer_report": {
+      "description": "Professional report page mimicking traditional Baptist church monthly business meeting treasury statements.",
+      "controls": ["Preset date ranges (This Month, Last Month, YTD, Custom)", "Account multi-select", "Print Button", "Download PDF", "Include Fund Detail checkbox"],
+      "sections": [
+        "Header: Church Name, Report Title, Date Range, Treasurer Name",
+        "Section 1: Bank Accounts Cash Balance Summary (Beginning Balance, Total Receipts, Total Disbursements, Ending Balance)",
+        "Section 2: Fund Balances Statement (Fund Name, Beginning, Receipts, Disbursements, Transfers, Ending Balance)",
+        "Section 3: Income & Expense Breakdown by Category vs Annual Budget",
+        "Section 4: Outstanding Checks / Uncleared Items (Optional)",
+        "Footer: Treasurer Signature & Date line for Church Business Meeting Minutes"
+      ]
+    },
+    "settings_panel": {
+      "description": "Full administrative control center split into 6 structured tabs.",
+      "tabs": [
+        {"id": "accounts", "label": "Bank Accounts", "description": "Add, rename, deactivate bank accounts"},
+        {"id": "funds", "label": "Church Funds", "description": "Manage General, Building, Missions, Youth, Benevolence funds"},
+        {"id": "chart_of_accounts", "label": "Categories / Chart of Accounts", "description": "4-digit code chart of accounts management"},
+        {"id": "payees", "label": "Payees & Vendors", "description": "Vendor directory and default category mappings"},
+        {"id": "users", "label": "Users & Roles", "description": "Treasurer, Assistant Treasurer, Auditor access"},
+        {"id": "church_profile", "label": "Church Info & Branding", "description": "Church name, logo upload, meeting day"}
+      ]
+    }
+  },
+  "print_stylesheet_instructions": {
+    "print_css_class": "@media print",
+    "rules": [
+      "Hide top navbar, sidebar, buttons, filter bars, pagination controls, and action icons (use class `.no-print` or `print:hidden`).",
+      "Set background to white (#FFFFFF) and text to dark black (#000000) for highest crispness on paper.",
+      "Ensure clean standard 0.5in / 12mm margins suitable for US Letter paper size.",
+      "Use crisp table borders (border-collapse, border 1px solid #333).",
+      "Display accounting double-underline under final totals (`border-b-4 border-double border-black`).",
+      "Force page breaks before major report sections if long (`page-break-inside: avoid`).",
+      "Include a dedicated signature block at the bottom: 'Respectfully submitted, _______________________ (Treasurer)  Date: _________'."
+    ]
+  },
+  "image_urls": {
+    "sanctuary_bg": "https://images.unsplash.com/photo-1786674963364-1fa47c52de86?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA3MDB8MHwxfHNlYXJjaHwyfHxjaHVyY2glMjBzYW5jdHVhcnklMjBxdWlldHxlbnwwfHx8fDE3OTEyMDIzNjZ8MA&ixlib=rb-4.1.0&q=85",
+    "sanctuary_alt": "https://images.unsplash.com/photo-1645880247875-e5245cb347d2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA3MDB8MHwxfHNlYXJjaHwxfHxjaHVyY2glMjBzYW5jdHVhcnklMjBxdWlldHxlbnwwfHx8fDE3OTEyMDIzNjZ8MA&ixlib=rb-4.1.0&q=85",
+    "financial_ledger": "https://images.unsplash.com/photo-1574884280706-7342ca3d4231?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxNzV8MHwxfHNlYXJjaHwzfHxmaW5hbmNpYWwlMjBhY2NvdW50aW5nJTIwcGFwZXIlMjBsZWRnZXJ8ZW58MHx8fHwxNzkxMjAyMzY2fDA&ixlib=rb-4.1.0&q=85"
+  },
+  "data_testid_convention": {
+    "pattern": "kebab-case description based on function and role",
+    "examples": [
+      "data-testid=\"login-form-submit-button\"",
+      "data-testid=\"nav-item-transactions\"",
+      "data-testid=\"btn-add-transaction\"",
+      "data-testid=\"modal-transaction-type-income\"",
+      "data-testid=\"input-check-number\"",
+      "data-testid=\"input-transaction-amount\"",
+      "data-testid=\"select-bank-account\"",
+      "data-testid=\"select-fund\"",
+      "data-testid=\"select-category\"",
+      "data-testid=\"transactions-search-input\"",
+      "data-testid=\"btn-print-treasurer-report\"",
+      "data-testid=\"report-date-preset-last-month\"",
+      "data-testid=\"btn-export-csv\""
+    ]
+  },
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "This codebase uses .js files (not .tsx). Do NOT use TypeScript annotations or interfaces inside component files.",
+    "Do NOT use pure transparent background on sticky headers, dropdowns, or modals. Always use solid or blurred backdrop (#FDFBF7 or rgba(253, 251, 247, 0.95)).",
+    "Use Sonner (`import { toast } from 'sonner'`) for user feedback notifications (e.g. Transaction saved, Report exported, Bank account added).",
+    "Ensure every financial table uses `font-mono` or `tabular-nums` for clean vertical decimal alignment.",
+    "All interactive elements MUST have `data-testid` attributes as specified in the testId conventions.",
+    "Ensure complete responsive support for desktop, laptop, and tablet screens.",
+    "The Monthly Treasurer's Report view MUST render cleanly on-screen and print impeccably on standard Letter paper using print styles."
+  ]
+}
