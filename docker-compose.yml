@@ -17,7 +17,10 @@ services:
       - DB_NAME=${DB_NAME:-church_treasury}
       - JWT_SECRET=${JWT_SECRET}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8080}
-      - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY:-}
+      - BACKUP_DIR=/data/backups
+    volumes:
+      # Nightly database backups land here. Change the left side to any folder you like.
+      - ./backups:/data/backups
     networks:
       - treasury
 

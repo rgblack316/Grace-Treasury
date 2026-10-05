@@ -428,6 +428,17 @@ function BackupTab() {
   const [file, setFile] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [cfg, setCfg] = useState(null);
+  const [savingCfg, setSavingCfg] = useState(false);
+  const [backups, setBackups] = useState([]);
+  const [running, setRunning] = useState(false);
+  const [restoreName, setRestoreName] = useState(null);
+
+  const loadBackups = () => api.get("/backups").then((r) => setBackups(r.data)).catch(() => {});
+  useEffect(() => {
+    api.get("/settings/backup").then((r) => setCfg(r.data)).catch(() => {});
+    loadBackups();
+  }, []);
 
   const doExport = async () => {
     setExporting(true);
@@ -435,9 +446,7 @@ function BackupTab() {
       const res = await api.get("/data/export", { responseType: "blob" });
       const url = window.URL.createObjectURL(new Blob([res.data], { type: "application/json" }));
       const a = document.createElement("a");
-      a.href = url;
-      a.download = `church-treasury-backup-${new Date().toISOString().slice(0, 10)}.json`;
-      a.click();
+      a.href = url; a.download = `church-treasury-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click();
       window.URL.revokeObjectURL(url);
       toast.success("Backup downloaded");
     } catch { toast.error("Could not export backup"); }
@@ -446,11 +455,9 @@ function BackupTab() {
 
   const doImport = async () => {
     if (!file) return;
-    setImporting(true);
-    setConfirmOpen(false);
+    setImporting(true); setConfirmOpen(false);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
+      const fd = new FormData(); fd.append("file", file);
       await api.post("/data/import", fd, { headers: { "Content-Type": "multipart/form-data" } });
       toast.success("Backup restored. Please sign in again.");
       setTimeout(() => { localStorage.removeItem("ct_token"); window.location.href = "/login"; }, 1500);
@@ -458,38 +465,131 @@ function BackupTab() {
     finally { setImporting(false); }
   };
 
-  return (
-    <div className="mt-4 grid gap-5 md:grid-cols-2">
-      <Card className="p-5 space-y-3">
-        <h3 className="font-serif text-lg font-semibold text-slate-900">Export (Backup)</h3>
-        <p className="text-sm text-muted-foreground">Download a complete JSON backup of all accounts, transactions, users, roles, and settings. Keep it somewhere safe.</p>
-        <Button onClick={doExport} disabled={exporting} className="bg-[#1E293B] hover:bg-[#0F172A]" data-testid="btn-export-data">
-          {exporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
-          Download Backup
-        </Button>
-      </Card>
+  const saveCfg = async () => {
+    setSavingCfg(true);
+    try {
+      const { data } = await api.put("/settings/backup", { enabled: cfg.enabled, time: cfg.time, retention: Number(cfg.retention) });
+      setCfg({ ...cfg, ...data });
+      toast.success("Backup schedule saved");
+    } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
+    finally { setSavingCfg(false); }
+  };
 
-      <Card className="p-5 space-y-3">
-        <h3 className="font-serif text-lg font-semibold text-slate-900">Restore (Import)</h3>
-        <p className="text-sm text-muted-foreground">Restore from a backup file. This <b>replaces all current data</b> and signs you out.</p>
-        <div className="flex items-start gap-2 text-xs text-[#B45309] bg-[#FEF3C7]/50 rounded-lg p-2.5">
-          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" /> Restoring overwrites everything currently in the app. Export a backup first if unsure.
+  const runNow = async () => {
+    setRunning(true);
+    try { await api.post("/backups/run"); toast.success("Backup created"); loadBackups(); }
+    catch { toast.error("Could not create backup"); }
+    finally { setRunning(false); }
+  };
+
+  const downloadServer = async (name) => {
+    try {
+      const res = await api.get(`/backups/${name}/download`, { responseType: "blob" });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: "application/json" }));
+      const a = document.createElement("a"); a.href = url; a.download = name; a.click();
+      window.URL.revokeObjectURL(url);
+    } catch { toast.error("Could not download"); }
+  };
+
+  const deleteServer = async (name) => {
+    try { await api.delete(`/backups/${name}`); toast.success("Backup deleted"); loadBackups(); }
+    catch { toast.error("Could not delete"); }
+  };
+
+  const doRestoreServer = async () => {
+    const name = restoreName; setRestoreName(null);
+    try {
+      await api.post(`/backups/${name}/restore`);
+      toast.success("Restored. Please sign in again.");
+      setTimeout(() => { localStorage.removeItem("ct_token"); window.location.href = "/login"; }, 1500);
+    } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
+  };
+
+  const fmtSize = (b) => (b > 1024 * 1024 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+
+  return (
+    <div className="mt-4 space-y-5">
+      <div className="grid gap-5 md:grid-cols-2">
+        <Card className="p-5 space-y-3">
+          <h3 className="font-serif text-lg font-semibold text-slate-900">Export (Backup)</h3>
+          <p className="text-sm text-muted-foreground">Download a complete JSON backup of all accounts, transactions, users, roles, and settings.</p>
+          <Button onClick={doExport} disabled={exporting} className="bg-[#1E293B] hover:bg-[#0F172A]" data-testid="btn-export-data">
+            {exporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}Download Backup
+          </Button>
+        </Card>
+
+        <Card className="p-5 space-y-3">
+          <h3 className="font-serif text-lg font-semibold text-slate-900">Restore (Import)</h3>
+          <p className="text-sm text-muted-foreground">Restore from a backup file. This <b>replaces all current data</b> and signs you out.</p>
+          <div className="flex items-start gap-2 text-xs text-[#B45309] bg-[#FEF3C7]/50 rounded-lg p-2.5">
+            <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" /> Restoring overwrites everything. Export a backup first if unsure.
+          </div>
+          <label className="flex items-center justify-center gap-2 border-2 border-dashed border-[#E5E0D8] rounded-lg py-4 cursor-pointer hover:bg-[#FAF8F3] text-sm" data-testid="import-data-dropzone">
+            <Upload className="h-4 w-4" /> {file ? file.name : "Choose a backup file (.json)"}
+            <input type="file" accept=".json,application/json" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} data-testid="import-data-input" />
+          </label>
+          <Button onClick={() => setConfirmOpen(true)} disabled={!file || importing} variant="destructive" data-testid="btn-restore-data">
+            {importing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}Restore from File
+          </Button>
+        </Card>
+      </div>
+
+      {cfg && (
+        <Card className="p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div><h3 className="font-serif text-lg font-semibold text-slate-900">Automatic Nightly Backups</h3>
+              <p className="text-sm text-muted-foreground">Saved to <span className="font-mono text-xs">{cfg.backup_dir}</span> on the server.</p></div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <span className="text-sm text-muted-foreground">Enabled</span>
+              <Switch checked={!!cfg.enabled} onCheckedChange={(v) => setCfg({ ...cfg, enabled: v })} data-testid="backup-enabled-switch" />
+            </label>
+          </div>
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="space-y-1.5"><Label>Run daily at</Label><Input type="time" value={cfg.time} onChange={(e) => setCfg({ ...cfg, time: e.target.value })} className="w-36" data-testid="backup-time-input" /></div>
+            <div className="space-y-1.5"><Label>Keep last (files)</Label><Input type="number" min="1" value={cfg.retention} onChange={(e) => setCfg({ ...cfg, retention: e.target.value })} className="w-28" data-testid="backup-retention-input" /></div>
+            <Button onClick={saveCfg} disabled={savingCfg} className="bg-[#1E293B] hover:bg-[#0F172A]" data-testid="btn-save-backup-cfg">
+              {savingCfg ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}Save Schedule
+            </Button>
+            <Button onClick={runNow} disabled={running} variant="outline" data-testid="btn-run-backup-now">
+              {running ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}Back Up Now
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      <Card className="p-5">
+        <h3 className="font-serif text-lg font-semibold text-slate-900 mb-3">Saved Backups on Server</h3>
+        <div className="divide-y divide-[#EEEDE7] border-t border-[#EEEDE7]">
+          {backups.length === 0 && <div className="py-6 text-sm text-muted-foreground text-center">No server backups yet. Use "Back Up Now" or wait for the nightly run.</div>}
+          {backups.map((b) => (
+            <div key={b.name} className="flex items-center justify-between py-3 gap-3" data-testid={`backup-row-${b.name}`}>
+              <div className="min-w-0">
+                <div className="font-mono text-sm text-slate-800 truncate">{b.name}</div>
+                <div className="text-xs text-muted-foreground">{new Date(b.created_at).toLocaleString()} · {fmtSize(b.size)}</div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <Button variant="ghost" size="sm" onClick={() => downloadServer(b.name)} data-testid={`btn-download-backup-${b.name}`}><Download className="h-4 w-4 mr-1" />Download</Button>
+                <Button variant="ghost" size="sm" onClick={() => setRestoreName(b.name)} data-testid={`btn-restore-backup-${b.name}`}><Upload className="h-4 w-4 mr-1" />Restore</Button>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => deleteServer(b.name)} data-testid={`btn-delete-backup-${b.name}`}><Trash2 className="h-4 w-4" /></Button>
+              </div>
+            </div>
+          ))}
         </div>
-        <label className="flex items-center justify-center gap-2 border-2 border-dashed border-[#E5E0D8] rounded-lg py-4 cursor-pointer hover:bg-[#FAF8F3] text-sm" data-testid="import-data-dropzone">
-          <Upload className="h-4 w-4" /> {file ? file.name : "Choose a backup file (.json)"}
-          <input type="file" accept=".json,application/json" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} data-testid="import-data-input" />
-        </label>
-        <Button onClick={() => setConfirmOpen(true)} disabled={!file || importing} variant="destructive" data-testid="btn-restore-data">
-          {importing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
-          Restore from Backup
-        </Button>
       </Card>
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>Replace all data?</AlertDialogTitle>
-            <AlertDialogDescription>This will permanently overwrite every account, transaction, user, and setting with the contents of the backup file. You will be signed out afterward.</AlertDialogDescription></AlertDialogHeader>
+            <AlertDialogDescription>This permanently overwrites every account, transaction, user, and setting with the uploaded backup. You will be signed out afterward.</AlertDialogDescription></AlertDialogHeader>
           <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={doImport} className="bg-destructive hover:bg-destructive/90" data-testid="confirm-restore">Yes, restore</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!restoreName} onOpenChange={(o) => !o && setRestoreName(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader><AlertDialogTitle>Restore this backup?</AlertDialogTitle>
+            <AlertDialogDescription>This replaces all current data with <span className="font-mono text-xs">{restoreName}</span> and signs you out.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={doRestoreServer} className="bg-destructive hover:bg-destructive/90" data-testid="confirm-restore-server">Yes, restore</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
     </div>
