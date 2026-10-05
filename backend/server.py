@@ -5,11 +5,13 @@ import os
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Query
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Query, UploadFile, File, Header, Form
+from fastapi.responses import StreamingResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import logging
+import csv
+import requests
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 import uuid
@@ -33,6 +35,59 @@ db = client[os.environ['DB_NAME']]
 
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
+
+# ----------------------------- Object storage -----------------------------
+STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
+STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+APP_NAME = "church-treasury"
+storage_key = None
+
+ALLOWED_UPLOAD_TYPES = {
+    "image/jpeg", "image/png", "image/heic", "image/heif", "image/webp", "application/pdf",
+}
+EXT_FOR_TYPE = {
+    "image/jpeg": "jpg", "image/png": "png", "image/heic": "heic",
+    "image/heif": "heif", "image/webp": "webp", "application/pdf": "pdf",
+}
+
+
+def init_storage(force: bool = False):
+    global storage_key
+    if storage_key and not force:
+        return storage_key
+    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+    resp.raise_for_status()
+    storage_key = resp.json()["storage_key"]
+    return storage_key
+
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    resp = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=120,
+    )
+    if resp.status_code == 404:
+        key = init_storage(force=True)
+        resp = requests.put(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key, "Content-Type": content_type},
+            data=data, timeout=120,
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_object(path: str):
+    key = init_storage()
+    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    if resp.status_code == 404:
+        key = init_storage(force=True)
+        resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -142,6 +197,7 @@ class TransactionInput(BaseModel):
     category_id: Optional[str] = None
     fund_id: Optional[str] = None
     memo: Optional[str] = ""
+    cleared: bool = False
 
 
 class ChurchSettings(BaseModel):
@@ -303,6 +359,7 @@ async def list_transactions(
     start: Optional[str] = None,
     end: Optional[str] = None,
     search: Optional[str] = None,
+    cleared: Optional[bool] = None,
 ):
     query: dict = {}
     if account_id:
@@ -315,6 +372,8 @@ async def list_transactions(
         query["payee_id"] = payee_id
     if type:
         query["type"] = type
+    if cleared is not None:
+        query["cleared"] = cleared
     if start or end:
         drange = {}
         if start:
@@ -330,6 +389,13 @@ async def list_transactions(
             ]
         }]
     items = await db.transactions.find(query, {"_id": 0}).sort("date", -1).to_list(5000)
+    ids = [t["id"] for t in items]
+    counts = {}
+    if ids:
+        async for f in db.files.find({"transaction_id": {"$in": ids}, "is_deleted": False}, {"_id": 0, "transaction_id": 1}):
+            counts[f["transaction_id"]] = counts.get(f["transaction_id"], 0) + 1
+    for t in items:
+        t["attachment_count"] = counts.get(t["id"], 0)
     return items
 
 
@@ -358,7 +424,255 @@ async def update_transaction(txn_id: str, data: TransactionInput, user: dict = D
 @api_router.delete("/transactions/{txn_id}")
 async def delete_transaction(txn_id: str, user: dict = Depends(get_current_user)):
     await db.transactions.delete_one({"id": txn_id})
+    await db.files.update_many({"transaction_id": txn_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
+
+
+class ClearedInput(BaseModel):
+    cleared: bool
+
+
+@api_router.patch("/transactions/{txn_id}/cleared")
+async def set_cleared(txn_id: str, data: ClearedInput, user: dict = Depends(get_current_user)):
+    existing = await db.transactions.find_one({"id": txn_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    await db.transactions.update_one({"id": txn_id}, {"$set": {"cleared": data.cleared}})
+    return {"ok": True, "cleared": data.cleared}
+
+
+# ----------------------------- Reconciliation summary -----------------------------
+@api_router.get("/accounts/{account_id}/reconcile")
+async def reconcile_summary(account_id: str, user: dict = Depends(get_current_user)):
+    acc = await db.accounts.find_one({"id": account_id}, {"_id": 0})
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    current = await account_balance(acc)
+    cleared_bal = float(acc.get("opening_balance", 0.0) or 0.0)
+    uncleared_count = 0
+    uncleared_total = 0.0
+    query = {"$or": [{"account_id": account_id}, {"to_account_id": account_id}]}
+    async for txn in db.transactions.find(query, {"_id": 0}):
+        eff = await signed_amount_for_account(txn, account_id)
+        if txn.get("cleared"):
+            cleared_bal += eff
+        else:
+            uncleared_count += 1
+            uncleared_total += eff
+    return {
+        "account_id": account_id,
+        "current_balance": round(current, 2),
+        "cleared_balance": round(cleared_bal, 2),
+        "uncleared_count": uncleared_count,
+        "uncleared_total": round(uncleared_total, 2),
+    }
+
+
+# ----------------------------- Receipt attachments -----------------------------
+@api_router.post("/transactions/{txn_id}/attachments")
+async def upload_attachment(txn_id: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    txn = await db.transactions.find_one({"id": txn_id})
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    content_type = (file.content_type or "").lower()
+    if content_type not in ALLOWED_UPLOAD_TYPES:
+        raise HTTPException(status_code=400, detail="Only photos (JPG, PNG, HEIC, WEBP) and PDF files are allowed")
+    data = await file.read()
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File is too large (max 15MB)")
+    ext = EXT_FOR_TYPE.get(content_type, "bin")
+    path = f"{APP_NAME}/receipts/{user['id']}/{new_id()}.{ext}"
+    try:
+        result = put_object(path, data, content_type)
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=502, detail="Could not store the file. Please try again.")
+    doc = {
+        "id": new_id(),
+        "transaction_id": txn_id,
+        "storage_path": result["path"],
+        "original_filename": file.filename,
+        "content_type": content_type,
+        "size": result.get("size", len(data)),
+        "is_deleted": False,
+        "created_at": now_iso(),
+    }
+    await db.files.insert_one(doc)
+    return clean(doc)
+
+
+@api_router.get("/transactions/{txn_id}/attachments")
+async def list_attachments(txn_id: str, user: dict = Depends(get_current_user)):
+    files = await db.files.find({"transaction_id": txn_id, "is_deleted": False}, {"_id": 0, "storage_path": 0}).to_list(100)
+    return files
+
+
+@api_router.get("/attachments/{file_id}/download")
+async def download_attachment(file_id: str, request: Request, auth: Optional[str] = Query(None)):
+    token = auth
+    if not token:
+        header = request.headers.get("Authorization", "")
+        token = header[7:] if header.startswith("Bearer ") else None
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    record = await db.files.find_one({"id": file_id, "is_deleted": False})
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    content, ctype = get_object(record["storage_path"])
+    return Response(content=content, media_type=record.get("content_type", ctype))
+
+
+@api_router.delete("/attachments/{file_id}")
+async def delete_attachment(file_id: str, user: dict = Depends(get_current_user)):
+    await db.files.update_one({"id": file_id}, {"$set": {"is_deleted": True}})
+    return {"ok": True}
+
+
+# ----------------------------- CSV import -----------------------------
+IMPORT_COLUMNS = ["Date", "Type", "Account", "To Account", "Amount", "Check#", "Payee", "Category", "Fund", "Memo"]
+
+
+@api_router.get("/import/template")
+async def import_template(user: dict = Depends(get_current_user)):
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(IMPORT_COLUMNS)
+    writer.writerow(["2026-06-07", "income", "*3217", "", "1420.10", "", "", "Deposit", "General Fund", "Sunday offering"])
+    writer.writerow(["2026-06-03", "expense", "*3217", "", "144.76", "4035", "Frontier Communications", "Utilities", "General Fund", "Internet/Phone Service"])
+    writer.writerow(["2026-06-15", "transfer", "*3217", "*6715", "500.00", "", "", "", "", "Move to savings"])
+    out.seek(0)
+    return Response(
+        content=out.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=transaction-import-template.csv"},
+    )
+
+
+def parse_date(s: str) -> Optional[str]:
+    s = (s or "").strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%m-%d-%Y"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+@api_router.post("/import/transactions")
+async def import_transactions(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    raw = (await file.read()).decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(raw))
+
+    accounts = await db.accounts.find({}, {"_id": 0}).to_list(1000)
+    acc_lookup = {}
+    for a in accounts:
+        acc_lookup[a["mask"].lower().lstrip("*")] = a["id"]
+        acc_lookup[a["name"].lower()] = a["id"]
+
+    payees = {p["name"].lower(): p["id"] for p in await db.payees.find({}, {"_id": 0}).to_list(1000)}
+    cats = {(c["name"].lower(), c["type"]): c["id"] for c in await db.categories.find({}, {"_id": 0}).to_list(1000)}
+    funds = {f["name"].lower(): f["id"] for f in await db.funds.find({}, {"_id": 0}).to_list(1000)}
+
+    created, errors = 0, []
+    created_payees, created_cats, created_funds = 0, 0, 0
+    docs = []
+
+    def resolve_account(val):
+        v = (val or "").strip().lower().lstrip("*")
+        return acc_lookup.get(v)
+
+    for i, row in enumerate(reader, start=2):
+        ttype = (row.get("Type") or "").strip().lower()
+        if ttype not in ("income", "expense", "transfer"):
+            errors.append({"row": i, "reason": f"Invalid Type '{row.get('Type')}' (use income, expense, or transfer)"})
+            continue
+        d = parse_date(row.get("Date"))
+        if not d:
+            errors.append({"row": i, "reason": f"Invalid or missing Date '{row.get('Date')}'"})
+            continue
+        acc_id = resolve_account(row.get("Account"))
+        if not acc_id:
+            errors.append({"row": i, "reason": f"Account '{row.get('Account')}' not found — add it in Settings first"})
+            continue
+        try:
+            amount = round(float((row.get("Amount") or "0").replace("$", "").replace(",", "").strip()), 2)
+        except ValueError:
+            errors.append({"row": i, "reason": f"Invalid Amount '{row.get('Amount')}'"})
+            continue
+        if amount <= 0:
+            errors.append({"row": i, "reason": "Amount must be greater than zero"})
+            continue
+
+        to_acc_id = None
+        if ttype == "transfer":
+            to_acc_id = resolve_account(row.get("To Account"))
+            if not to_acc_id:
+                errors.append({"row": i, "reason": "Transfer requires a valid 'To Account'"})
+                continue
+
+        # payee (auto-create)
+        payee_id = None
+        pname = (row.get("Payee") or "").strip()
+        if pname and ttype != "transfer":
+            key = pname.lower()
+            if key not in payees:
+                pid = new_id()
+                await db.payees.insert_one({"id": pid, "name": pname, "active": True, "created_at": now_iso()})
+                payees[key] = pid
+                created_payees += 1
+            payee_id = payees[key]
+
+        # category (auto-create)
+        category_id = None
+        cname = (row.get("Category") or "").strip()
+        if cname and ttype != "transfer":
+            ctype = "income" if ttype == "income" else "expense"
+            key = (cname.lower(), ctype)
+            if key not in cats:
+                cid = new_id()
+                await db.categories.insert_one({"id": cid, "name": cname, "type": ctype, "active": True, "created_at": now_iso()})
+                cats[key] = cid
+                created_cats += 1
+            category_id = cats[key]
+
+        # fund (auto-create)
+        fund_id = None
+        fname = (row.get("Fund") or "").strip()
+        if fname:
+            key = fname.lower()
+            if key not in funds:
+                fid = new_id()
+                await db.funds.insert_one({"id": fid, "name": fname, "description": "", "active": True, "created_at": now_iso()})
+                funds[key] = fid
+                created_funds += 1
+            fund_id = funds[key]
+
+        docs.append({
+            "id": new_id(), "type": ttype, "date": d, "account_id": acc_id,
+            "to_account_id": to_acc_id, "amount": amount,
+            "payee_id": payee_id, "check_number": (row.get("Check#") or "").strip(),
+            "category_id": category_id, "fund_id": fund_id,
+            "memo": (row.get("Memo") or "").strip(), "cleared": False,
+            "created_at": now_iso(), "created_by": user["id"],
+        })
+        created += 1
+
+    if docs:
+        await db.transactions.insert_many(docs)
+
+    return {
+        "created": created,
+        "errors": errors,
+        "created_payees": created_payees,
+        "created_categories": created_cats,
+        "created_funds": created_funds,
+    }
 
 
 # ----------------------------- Dashboard -----------------------------
@@ -805,6 +1119,11 @@ async def seed():
 @app.on_event("startup")
 async def startup():
     await seed()
+    try:
+        init_storage()
+        logger.info("Storage initialized")
+    except Exception as e:
+        logger.error(f"Storage init failed: {e}")
 
 
 @app.on_event("shutdown")

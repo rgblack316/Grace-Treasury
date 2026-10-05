@@ -21,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, Loader2 } from "lucide-react";
+import { ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, Loader2, Paperclip, FileText, ImageIcon, Trash2, Eye, Upload } from "lucide-react";
 
 const TYPES = [
   { id: "income", label: "Income", icon: ArrowDownCircle, color: "text-[#15803D]" },
@@ -30,12 +30,16 @@ const TYPES = [
 ];
 
 const NONE = "__none__";
+const ACCEPT = "image/jpeg,image/png,image/heic,image/heif,image/webp,application/pdf";
 
 export default function TransactionDialog({ open, onOpenChange, editing, onSaved }) {
   const [type, setType] = useState("income");
   const [form, setForm] = useState({});
   const [lists, setLists] = useState({ accounts: [], funds: [], categories: [], payees: [] });
   const [saving, setSaving] = useState(false);
+  const [pending, setPending] = useState([]); // File[] to upload on save
+  const [existing, setExisting] = useState([]); // uploaded attachments
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -51,6 +55,8 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
 
   useEffect(() => {
     if (!open) return;
+    setPending([]);
+    setExisting([]);
     if (editing) {
       setType(editing.type);
       setForm({
@@ -64,6 +70,7 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
         fund_id: editing.fund_id || "",
         memo: editing.memo || "",
       });
+      api.get(`/transactions/${editing.id}/attachments`).then((r) => setExisting(r.data)).catch(() => {});
     } else {
       setType("income");
       setForm({ date: todayISO(), amount: "", check_number: "", memo: "" });
@@ -71,6 +78,34 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
   }, [open, editing]);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v === NONE ? "" : v }));
+
+  const addFiles = (fileList) => {
+    const files = Array.from(fileList || []);
+    const valid = files.filter((f) => ACCEPT.split(",").includes(f.type));
+    if (valid.length !== files.length) toast.error("Only photos and PDF files are allowed");
+    setPending((p) => [...p, ...valid]);
+  };
+
+  const uploadTo = async (txnId) => {
+    for (const file of pending) {
+      const fd = new FormData();
+      fd.append("file", file);
+      await api.post(`/transactions/${txnId}/attachments`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+    }
+  };
+
+  const viewExisting = async (f) => {
+    const res = await api.get(`/attachments/${f.id}/download`, { responseType: "blob" });
+    const url = window.URL.createObjectURL(res.data);
+    window.open(url, "_blank");
+    setTimeout(() => window.URL.revokeObjectURL(url), 60000);
+  };
+
+  const deleteExisting = async (f) => {
+    await api.delete(`/attachments/${f.id}`);
+    setExisting((e) => e.filter((x) => x.id !== f.id));
+    toast.success("Receipt removed");
+  };
 
   const submit = async () => {
     if (!form.account_id) return toast.error("Please choose a bank account");
@@ -89,28 +124,35 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
       category_id: form.category_id || null,
       fund_id: form.fund_id || null,
       memo: form.memo || "",
+      cleared: editing ? !!editing.cleared : false,
     };
     setSaving(true);
     try {
+      let txnId;
       if (editing) {
         await api.put(`/transactions/${editing.id}`, payload);
-        toast.success("Transaction updated");
+        txnId = editing.id;
       } else {
-        await api.post("/transactions", payload);
-        toast.success("Transaction recorded");
+        const { data } = await api.post("/transactions", payload);
+        txnId = data.id;
       }
+      if (pending.length) {
+        setUploading(true);
+        await uploadTo(txnId);
+      }
+      toast.success(editing ? "Transaction updated" : "Transaction recorded");
       onOpenChange(false);
       onSaved && onSaved();
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     } finally {
       setSaving(false);
+      setUploading(false);
     }
   };
 
-  const catsForType = lists.categories.filter((c) =>
-    type === "transfer" ? false : c.type === type
-  );
+  const catsForType = lists.categories.filter((c) => (type === "transfer" ? false : c.type === type));
+  const fileIcon = (ct) => (ct === "application/pdf" ? FileText : ImageIcon);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -231,13 +273,40 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
             <Label>{type === "expense" ? "Memo / Reason" : "Memo"} <span className="text-muted-foreground font-normal">(optional)</span></Label>
             <Textarea value={form.memo || ""} onChange={(e) => set("memo", e.target.value)} rows={2} placeholder="e.g. Electric Service (Church)" data-testid="input-memo" />
           </div>
+
+          {/* Receipts */}
+          <div className="space-y-2 pt-1 border-t border-[#EEEDE7]">
+            <Label className="flex items-center gap-1.5 pt-2"><Paperclip className="h-4 w-4" /> Receipts <span className="text-muted-foreground font-normal">(photos or PDF)</span></Label>
+            {existing.map((f) => {
+              const Icon = fileIcon(f.content_type);
+              return (
+                <div key={f.id} className="flex items-center justify-between bg-[#FAF8F3] rounded-lg px-3 py-2 text-sm" data-testid={`attachment-${f.id}`}>
+                  <span className="flex items-center gap-2 min-w-0"><Icon className="h-4 w-4 shrink-0 text-[#B45309]" /><span className="truncate">{f.original_filename}</span></span>
+                  <span className="flex items-center gap-1 shrink-0">
+                    <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => viewExisting(f)} data-testid={`btn-view-attachment-${f.id}`}><Eye className="h-4 w-4" /></Button>
+                    <Button type="button" variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteExisting(f)} data-testid={`btn-delete-attachment-${f.id}`}><Trash2 className="h-4 w-4" /></Button>
+                  </span>
+                </div>
+              );
+            })}
+            {pending.map((f, i) => (
+              <div key={i} className="flex items-center justify-between bg-[#F0FDF4] rounded-lg px-3 py-2 text-sm">
+                <span className="flex items-center gap-2 min-w-0"><Upload className="h-4 w-4 shrink-0 text-[#15803D]" /><span className="truncate">{f.name}</span><span className="text-xs text-muted-foreground">(pending)</span></span>
+                <Button type="button" variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => setPending((p) => p.filter((_, idx) => idx !== i))}><Trash2 className="h-4 w-4" /></Button>
+              </div>
+            ))}
+            <label className="flex items-center justify-center gap-2 border border-dashed border-[#E5E0D8] rounded-lg py-3 text-sm text-muted-foreground cursor-pointer hover:bg-[#FAF8F3]" data-testid="attachment-dropzone">
+              <Paperclip className="h-4 w-4" /> Add a receipt
+              <input type="file" accept={ACCEPT} multiple className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} data-testid="attachment-input" />
+            </label>
+          </div>
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="btn-cancel-transaction">Cancel</Button>
           <Button onClick={submit} disabled={saving} className="bg-[#1E293B] hover:bg-[#0F172A]" data-testid="btn-save-transaction">
-            {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-            {editing ? "Save Changes" : "Record"}
+            {(saving || uploading) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+            {uploading ? "Uploading…" : editing ? "Save Changes" : "Record"}
           </Button>
         </DialogFooter>
       </DialogContent>
