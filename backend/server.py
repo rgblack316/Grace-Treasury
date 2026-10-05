@@ -8,10 +8,13 @@ load_dotenv(ROOT_DIR / '.env')
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Query, UploadFile, File, Header, Form
 from fastapi.responses import StreamingResponse, Response
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
+from bson import ObjectId
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import logging
 import csv
-import requests
+import json
+import glob
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 import uuid
@@ -36,14 +39,13 @@ db = client[os.environ['DB_NAME']]
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
 
-# ----------------------------- Object storage (receipts) -----------------------------
+# ----------------------------- Receipt storage (MongoDB GridFS — fully local) -----------------------------
 import re
 
-STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
-STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
-EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
-APP_NAME = "church-treasury"
-storage_key = None
+fs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="receipts")
+
+BACKUP_DIR = os.environ.get("BACKUP_DIR") or str(ROOT_DIR / "backups")
+os.makedirs(BACKUP_DIR, exist_ok=True)
 
 ALLOWED_UPLOAD_TYPES = {
     "image/jpeg", "image/png", "image/heic", "image/heif", "image/webp", "application/pdf",
@@ -52,44 +54,6 @@ EXT_FOR_TYPE = {
     "image/jpeg": "jpg", "image/png": "png", "image/heic": "heic",
     "image/heif": "heif", "image/webp": "webp", "application/pdf": "pdf",
 }
-
-
-def init_storage(force: bool = False):
-    global storage_key
-    if storage_key and not force:
-        return storage_key
-    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
-    resp.raise_for_status()
-    storage_key = resp.json()["storage_key"]
-    return storage_key
-
-
-def put_object(path: str, data: bytes, content_type: str) -> dict:
-    key = init_storage()
-    resp = requests.put(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key, "Content-Type": content_type},
-        data=data, timeout=120,
-    )
-    if resp.status_code == 404:
-        key = init_storage(force=True)
-        resp = requests.put(
-            f"{STORAGE_URL}/objects/{path}",
-            headers={"X-Storage-Key": key, "Content-Type": content_type},
-            data=data, timeout=120,
-        )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def get_object(path: str):
-    key = init_storage()
-    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
-    if resp.status_code == 404:
-        key = init_storage(force=True)
-        resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
-    resp.raise_for_status()
-    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 
 # ----------------------------- Permissions -----------------------------
@@ -669,19 +633,19 @@ async def upload_attachment(txn_id: str, file: UploadFile = File(...), user: dic
     if len(data) > 15 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File is too large (max 15MB)")
     ext = EXT_FOR_TYPE.get(content_type, "bin")
-    path = f"{APP_NAME}/receipts/{user['id']}/{new_id()}.{ext}"
+    filename = file.filename or f"{new_id()}.{ext}"
     try:
-        result = put_object(path, data, content_type)
+        grid_id = await fs_bucket.upload_from_stream(filename, data, metadata={"content_type": content_type})
     except Exception as e:
         logger.error(f"Upload failed: {e}")
         raise HTTPException(status_code=502, detail="Could not store the file. Please try again.")
     doc = {
         "id": new_id(),
         "transaction_id": txn_id,
-        "storage_path": result["path"],
+        "gridfs_id": str(grid_id),
         "original_filename": file.filename,
         "content_type": content_type,
-        "size": result.get("size", len(data)),
+        "size": len(data),
         "is_deleted": False,
         "created_at": now_iso(),
     }
@@ -691,7 +655,7 @@ async def upload_attachment(txn_id: str, file: UploadFile = File(...), user: dic
 
 @api_router.get("/transactions/{txn_id}/attachments")
 async def list_attachments(txn_id: str, user: dict = Depends(require_txn_view)):
-    files = await db.files.find({"transaction_id": txn_id, "is_deleted": False}, {"_id": 0, "storage_path": 0}).to_list(100)
+    files = await db.files.find({"transaction_id": txn_id, "is_deleted": False}, {"_id": 0, "gridfs_id": 0}).to_list(100)
     return files
 
 
@@ -708,15 +672,25 @@ async def download_attachment(file_id: str, request: Request, auth: Optional[str
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
     record = await db.files.find_one({"id": file_id, "is_deleted": False})
-    if not record:
+    if not record or not record.get("gridfs_id"):
         raise HTTPException(status_code=404, detail="File not found")
-    content, ctype = get_object(record["storage_path"])
-    return Response(content=content, media_type=record.get("content_type", ctype))
+    try:
+        stream = await fs_bucket.open_download_stream(ObjectId(record["gridfs_id"]))
+        content = await stream.read()
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
+    return Response(content=content, media_type=record.get("content_type", "application/octet-stream"))
 
 
 @api_router.delete("/attachments/{file_id}")
 async def delete_attachment(file_id: str, user: dict = Depends(require_txn_manage)):
+    record = await db.files.find_one({"id": file_id})
     await db.files.update_one({"id": file_id}, {"$set": {"is_deleted": True}})
+    if record and record.get("gridfs_id"):
+        try:
+            await fs_bucket.delete(ObjectId(record["gridfs_id"]))
+        except Exception:
+            pass
     return {"ok": True}
 
 
@@ -1190,14 +1164,18 @@ async def update_church(data: ChurchSettings, user: dict = Depends(require_setti
 EXPORT_COLLECTIONS = ["users", "roles", "accounts", "funds", "categories", "payees", "coa", "transactions", "files", "settings"]
 
 
-@api_router.get("/data/export")
-async def export_data(user: dict = Depends(require_data)):
+async def build_export_payload() -> dict:
     payload = {"version": 1, "app": "church-treasury", "exported_at": now_iso(), "data": {}}
     for coll in EXPORT_COLLECTIONS:
         docs = await db[coll].find({}, {"_id": 0}).to_list(100000)
         payload["data"][coll] = docs
-    import json as _json
-    body = _json.dumps(payload, indent=2)
+    return payload
+
+
+@api_router.get("/data/export")
+async def export_data(user: dict = Depends(require_data)):
+    payload = await build_export_payload()
+    body = json.dumps(payload, indent=2)
     filename = f"church-treasury-backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
     return Response(
         content=body,
@@ -1219,6 +1197,163 @@ async def import_data(file: UploadFile = File(...), user: dict = Depends(require
     if not isinstance(data.get("users"), list) or len(data["users"]) == 0:
         raise HTTPException(status_code=400, detail="The backup has no users — restoring it would lock you out")
 
+    counts = {}
+    for coll in EXPORT_COLLECTIONS:
+        docs = data.get(coll)
+        if not isinstance(docs, list):
+            continue
+        await db[coll].delete_many({})
+        if docs:
+            for d in docs:
+                d.pop("_id", None)
+            await db[coll].insert_many(docs)
+        counts[coll] = len(docs)
+    return {"ok": True, "restored": counts}
+
+
+# ----------------------------- Scheduled backups -----------------------------
+BACKUP_PREFIX = "church-treasury-backup-"
+DEFAULT_BACKUP_SETTINGS = {"id": "backup", "enabled": True, "time": "02:00", "retention": 14}
+scheduler = AsyncIOScheduler()
+
+
+class BackupSettings(BaseModel):
+    enabled: bool = True
+    time: str = "02:00"
+    retention: int = 14
+
+
+def _safe_backup_name(name: str) -> str:
+    base = os.path.basename(name)
+    if not base.startswith(BACKUP_PREFIX) or not base.endswith(".json") or "/" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid backup file name")
+    return base
+
+
+async def get_backup_settings() -> dict:
+    doc = await db.settings.find_one({"id": "backup"}, {"_id": 0})
+    if not doc:
+        doc = dict(DEFAULT_BACKUP_SETTINGS)
+        await db.settings.update_one({"id": "backup"}, {"$set": doc}, upsert=True)
+    return doc
+
+
+def apply_retention(retention: int):
+    try:
+        files = sorted(glob.glob(os.path.join(BACKUP_DIR, f"{BACKUP_PREFIX}*.json")))
+        if retention and len(files) > retention:
+            for old in files[: len(files) - retention]:
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+    except Exception as e:
+        logger.error(f"Retention cleanup failed: {e}")
+
+
+async def run_backup() -> str:
+    payload = await build_export_payload()
+    fname = f"{BACKUP_PREFIX}{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+    full = os.path.join(BACKUP_DIR, fname)
+    with open(full, "w") as f:
+        json.dump(payload, f, indent=2)
+    cfg = await get_backup_settings()
+    apply_retention(int(cfg.get("retention", 14)))
+    logger.info(f"Backup written: {fname}")
+    return fname
+
+
+async def scheduled_backup_job():
+    cfg = await get_backup_settings()
+    if cfg.get("enabled", True):
+        await run_backup()
+
+
+async def reschedule_backup():
+    cfg = await get_backup_settings()
+    try:
+        scheduler.remove_job("nightly_backup")
+    except Exception:
+        pass
+    if cfg.get("enabled", True):
+        hh, mm = (cfg.get("time") or "02:00").split(":")
+        scheduler.add_job(scheduled_backup_job, "cron", hour=int(hh), minute=int(mm), id="nightly_backup", replace_existing=True)
+
+
+@api_router.get("/settings/backup")
+async def get_backup_config(user: dict = Depends(require_data)):
+    cfg = await get_backup_settings()
+    cfg["backup_dir"] = BACKUP_DIR
+    return cfg
+
+
+@api_router.put("/settings/backup")
+async def update_backup_config(data: BackupSettings, user: dict = Depends(require_data)):
+    if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", data.time):
+        raise HTTPException(status_code=400, detail="Time must be in 24-hour HH:MM format")
+    doc = {"id": "backup", "enabled": data.enabled, "time": data.time, "retention": max(1, int(data.retention))}
+    await db.settings.update_one({"id": "backup"}, {"$set": doc}, upsert=True)
+    await reschedule_backup()
+    return doc
+
+
+@api_router.get("/backups")
+async def list_backups(user: dict = Depends(require_data)):
+    out = []
+    for path in sorted(glob.glob(os.path.join(BACKUP_DIR, f"{BACKUP_PREFIX}*.json")), reverse=True):
+        st = os.stat(path)
+        out.append({
+            "name": os.path.basename(path),
+            "size": st.st_size,
+            "created_at": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+        })
+    return out
+
+
+@api_router.post("/backups/run")
+async def run_backup_now(user: dict = Depends(require_data)):
+    name = await run_backup()
+    return {"ok": True, "name": name}
+
+
+@api_router.get("/backups/{name}/download")
+async def download_backup(name: str, request: Request, auth: Optional[str] = Query(None)):
+    token = auth or (request.headers.get("Authorization", "")[7:] if request.headers.get("Authorization", "").startswith("Bearer ") else None)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    base = _safe_backup_name(name)
+    full = os.path.join(BACKUP_DIR, base)
+    if not os.path.exists(full):
+        raise HTTPException(status_code=404, detail="Backup not found")
+    with open(full, "rb") as f:
+        content = f.read()
+    return Response(content=content, media_type="application/json", headers={"Content-Disposition": f"attachment; filename={base}"})
+
+
+@api_router.delete("/backups/{name}")
+async def delete_backup(name: str, user: dict = Depends(require_data)):
+    base = _safe_backup_name(name)
+    full = os.path.join(BACKUP_DIR, base)
+    if os.path.exists(full):
+        os.remove(full)
+    return {"ok": True}
+
+
+@api_router.post("/backups/{name}/restore")
+async def restore_backup(name: str, user: dict = Depends(require_data)):
+    base = _safe_backup_name(name)
+    full = os.path.join(BACKUP_DIR, base)
+    if not os.path.exists(full):
+        raise HTTPException(status_code=404, detail="Backup not found")
+    with open(full) as f:
+        payload = json.load(f)
+    data = payload.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("users"), list) or len(data["users"]) == 0:
+        raise HTTPException(status_code=400, detail="This backup is invalid or has no users")
     counts = {}
     for coll in EXPORT_COLLECTIONS:
         docs = data.get(coll)
@@ -1305,10 +1440,13 @@ async def seed_starter_data():
 async def startup():
     await ensure_indexes()
     try:
-        init_storage()
-        logger.info("Storage initialized")
+        await get_backup_settings()
+        await reschedule_backup()
+        if not scheduler.running:
+            scheduler.start()
+        logger.info("Backup scheduler started")
     except Exception as e:
-        logger.error(f"Storage init failed: {e}")
+        logger.error(f"Backup scheduler failed to start: {e}")
 
 
 @app.on_event("shutdown")

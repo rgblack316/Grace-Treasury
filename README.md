@@ -25,12 +25,15 @@ installs it starts with a clean, empty database and creates its own administrato
   Expenses and Income, totals, and New Balance, with optional category-summary and fund-balance sections.
 - **Bank reconciliation** — tick off each transaction that has cleared the bank; a running cleared
   balance per account helps you match your statement.
-- **Receipt attachments** — attach photos (JPG/PNG/HEIC/WEBP) or PDFs to any transaction.
+- **Receipt attachments** — attach photos (JPG/PNG/HEIC/WEBP) or PDFs to any transaction. Files are
+  stored **inside MongoDB (GridFS)**, so everything stays on your server — no cloud, no API keys.
 - **Spreadsheet import** — bulk-import past months from a CSV template; new payees, categories, and
   funds are auto-created.
 - **Users & roles** — the treasurer can add additional logins and create custom roles that limit what
   each person can do (view only, record transactions, manage settings, manage users, manage backups).
-- **Backup & restore** — export the entire database to a JSON file and restore it later, from the Settings page.
+- **Backup & restore** — export the whole database to a JSON file (and restore it) from the Settings
+  page, **plus automatic nightly backups** written to a folder/volume you choose, with configurable
+  time and retention.
 
 ### Built-in roles
 | Role | Can do |
@@ -101,12 +104,10 @@ Set these in your `.env` file (see `.env.example`):
 | `JWT_SECRET` | ✅ | Long random string used to sign login tokens. **Change this.** |
 | `DB_NAME` | ✅ | Database name (default `church_treasury`). |
 | `CORS_ORIGINS` | ✅ | Allowed origin(s) for the frontend, e.g. `http://localhost:8080`. |
-| `EMERGENT_LLM_KEY` | optional | Only needed for **receipt attachments** (cloud file storage). Leave blank to run fully offline without the receipts feature. |
+| `BACKUP_DIR` | optional | Folder (inside the backend container) where nightly backups are written. The Compose file mounts `./backups` on your host to `/data/backups`. |
 
-> **Note on receipts:** Receipt file storage uses a managed object-storage service and requires
-> `EMERGENT_LLM_KEY`. All other data (accounts, transactions, users, reports) is stored entirely in
-> your local MongoDB and never leaves your server. If you don't set this key, the app works normally —
-> only the receipt-attachment feature is disabled.
+> **Fully offline:** Everything — including receipt images (stored in MongoDB GridFS) — lives in your
+> local database and files on your server. No external services or API keys are required.
 
 ---
 
@@ -145,10 +146,14 @@ You'll also need MongoDB running locally (`mongodb://localhost:27017`).
 ## 💾 Backups
 
 From **Settings → Backup & Restore** you can:
-- **Export** a full JSON backup of all data at any time.
-- **Restore** a backup (this replaces all current data and signs you out).
+- **Export** a full JSON backup of all data at any time, and **Restore** from a backup file (this
+  replaces all current data and signs you out).
+- Configure **automatic nightly backups**: enable/disable, set the time of day, and choose how many
+  recent backups to keep. Nightly backups are written to the `BACKUP_DIR` folder (mapped to `./backups`
+  on your host by the Compose file) and can be downloaded, restored, or deleted from the same page.
 
-Store exported backups somewhere safe (they contain your records and hashed logins).
+Store exported backups somewhere safe (they contain your records and hashed logins). Receipt images
+live in MongoDB and are preserved by the `mongo_data` volume.
 
 ---
 
