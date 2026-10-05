@@ -71,7 +71,7 @@ cd grace-treasury
 
 ### 3. Create your environment file
 ```bash
-cp .env.example .env
+cp env.example .env
 ```
 Open `.env` and set a strong, random `JWT_SECRET`:
 ```bash
@@ -97,7 +97,7 @@ Your data lives in the `mongo_data` Docker volume, so it survives restarts.
 
 ## ⚙️ Environment variables
 
-Set these in your `.env` file (see `.env.example`):
+Set these in your `.env` file (see `env.example`):
 
 | Variable | Required | Description |
 |----------|----------|-------------|

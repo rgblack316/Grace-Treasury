@@ -13,7 +13,7 @@ Fully offline — no cloud services or API keys required.
 - Receipts: MongoDB GridFS (`fs_bucket`) — local, persists in mongo_data volume.
 - Scheduled backups: APScheduler nightly job -> JSON files in BACKUP_DIR (configurable).
 - PDF: reportlab, letter size.
-- Distribution: docker-compose.yml (mongo + backend + frontend/nginx), Dockerfiles, README.md, .env.example.
+- Distribution: docker-compose.yml (mongo + backend + frontend/nginx), Dockerfiles, README.md, env.example.
 
 ## Permissions / Roles
 - Permissions: transactions.view, transactions.manage, reports.view, settings.manage, users.manage, data.manage.

@@ -90,6 +90,3 @@ credentials.json
 *.key
 .credentials
 
-# Keep the example env template in the repo (real .env files stay ignored above)
-!.env.example
-!**/.env.example
