@@ -1,0 +1,36 @@
+{
+  "summary": "Validated the new self-host iteration: Setup wizard + strong password, Roles CRUD + built-in protection, Users-with-role + Viewer permission gating (UI + backend), Backup export + Restore round-trip. Backend: new pytest suite /app/backend/tests/test_setup_roles_backup.py = 26 passed, 3 skipped (fresh-state zero-asserts intentionally skipped — DB had prior test data from pytest/UI runs; endpoint behaviour verified via the setup/export tests instead). Frontend: /setup -> /login redirect after setup done; admin sees Dashboard/Transactions/Reports/Settings + '+ New Entry'; Settings tabs show Bank Accounts, Funds, Categories, Payees, Chart of Accounts, Church Info, Roles, Users, Backup & Restore; Roles tab lists Administrator (Built-in; no edit/delete icons), Bookkeeper, Viewer; Add Role modal lists all 6 permissions with descriptions; created UIAssistant with transactions.view+transactions.manage, saved, deleted successfully; deleting Viewer (1 user assigned) is blocked with 'Roles assigned to users cannot be deleted until reassigned' error toast; Add User weak-password shows toast 'At least 12 characters with uppercase, lowercase, a number, and a symbol'; Backup export downloads 11.5KB JSON with keys version/app/exported_at/data (2 users). Viewer login: NO Settings nav tab, NO 'New Entry' button on Transactions page; viewer tokens enforce 403 on POST /transactions, POST /accounts, GET /data/export; GET /transactions and GET /dashboard return 200. Restore round-trip (admin): export -> import same JSON -> re-login -> TEST_Checking account + TEST_backup_txn transaction preserved. Non-backup JSON correctly rejected 400.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Transactions list (admin)", "issues": ["Minor: because tests re-created the same TEST_backup_txn across restore iterations, the list showed 4 duplicate rows after multiple restore round-trips. Not a bug — expected since restore merges backup contents into a cleared DB — but worth noting that duplicates arise only via repeated test runs, not normal user flow."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_setup_roles_backup.py",
+    "/app/test_reports/pytest/setup_roles_backup.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Setup wizard is correctly single-shot: /api/auth/setup returns 400 'Setup has already been completed' once admin exists. Good.",
+    "Strong-password rule is enforced in both /auth/setup and POST /auth/users — error message is clear and matches the UI live checklist spec.",
+    "Role deletion correctly checks assignment and returns a human-readable error ('Roles assigned to users cannot be deleted until reassigned'). Built-in Administrator role is protected in UI (no edit/delete icons) and backend (DELETE returns 400/403).",
+    "Permission enforcement is uniform: viewer gets 200 on view endpoints and 403 on write/data endpoints — matches resolve_permissions + require_permission dependency pattern.",
+    "Export payload is wrapped under {version, app, exported_at, data:{...}} — restore validates presence of users inside data and rejects a bare dict. Good safety check.",
+    "server.py is now 1300+ lines — reiterating prior iteration recommendation to split into modules (auth, roles/users, transactions, imports, attachments, reports, data). Not blocking.",
+    "Chart-of-accounts endpoint path is /api/coa (not /api/chart_of_accounts). Fine, just noting for frontend consistency.",
+    "No seeded bank accounts/payees/transactions on fresh install verified via setup-status + backend tests. Generic categories (12), one General Fund, generic COA seeded on setup."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_setup_roles_backup.py (new)"
+  ],
+  "success_rate": {"backend": "100% (26/26 executed; 3 fresh-state assertions intentionally skipped)", "frontend": "100% of targeted flows (setup redirect, admin nav, roles CRUD + protection, user weak-pw, viewer gating, backup export, restore round-trip)"},
+  "test_credentials": "Admin: treasurer@church.org / Church#Treasury2026 ; Viewer: viewer@church.org / Viewer#Account9",
+  "seed_data_creation": "Via setup wizard: Admin user 'Church Admin' (treasurer@church.org). Via tests: Viewer user 'View Only' (viewer@church.org), TEST_Checking account ($1000 opening), TEST_backup_txn income transaction ($500), and transient role 'UIAssistant' (created+deleted in UI). All test-side artifacts are prefixed TEST_ or UIAssistant for easy cleanup.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Setup wizard is now COMPLETE — /api/auth/setup-status returns needs_setup=false. To exercise the wizard again you must wipe users+roles+coa (or ask for a fresh DB). Admin + Viewer users remain in DB; several TEST_Checking copies and duplicate TEST_backup_txn rows exist from restore round-trips. data-testids verified: setup-* (page not revisited now), nav-item-transactions/-settings, settings-tab-roles/users/backup, btn-add-role, perm-<key>, btn-save-role, btn-delete-role-<id>, btn-add-user, btn-save-user, btn-export-data, btn-quick-add-transaction (admin only). Chart-of-accounts endpoint is /api/coa. Pytest file uses -n 0 mode (shared module-level session_state) — do NOT run under xdist loadscope; use `pytest ... -n 0`.",
+  "rca of the issue": "No defects found."
+}

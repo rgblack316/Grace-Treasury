@@ -1,53 +1,41 @@
-# Church Treasury & Accounting App — PRD
+# Grace Treasury — Church Accounting App — PRD
 
-## Original Problem Statement
-Self-hosted accounting app for a church treasurer (Providence Baptist Church) to track income and expenses across multiple bank accounts and print monthly treasurer's reports for business meetings. Three bank accounts to start, with add/remove support. Runs locally in Docker.
+## Summary
+Self-hostable, generic church treasury app. Track income/expenses/transfers across bank accounts,
+reconcile, attach receipts, import CSV, produce printable/PDF monthly Treasurer's Reports. Distributed
+via GitHub + Docker Compose; each church starts with an empty DB and runs a first-run setup wizard.
 
 ## Architecture
-- **Backend**: FastAPI (`/app/backend/server.py`), MongoDB (motor). All routes under `/api`.
-- **Frontend**: React 19 + CRACO, Tailwind, shadcn/ui, Spectral/IBM Plex Sans/JetBrains Mono fonts.
-- **Auth**: JWT Bearer tokens (localStorage key `ct_token`), bcrypt password hashing. First user = admin/treasurer.
-- **PDF**: reportlab server-side (`/api/reports/treasurer/pdf`), letter size.
-- **File storage**: Emergent object storage (receipts), DB `files` collection is source of truth with soft-delete.
+- Backend: FastAPI (`/app/backend/server.py`), MongoDB (motor). Routes under `/api`.
+- Frontend: React 19 + CRACO, Tailwind, shadcn/ui, Spectral/IBM Plex Sans/JetBrains Mono.
+- Auth: JWT Bearer (localStorage `ct_token`), bcrypt. First user = Administrator via setup wizard.
+- Receipts: Emergent object storage (requires EMERGENT_LLM_KEY); all other data in local MongoDB.
+- PDF: reportlab, letter size.
+- Distribution: docker-compose.yml (mongo + backend + frontend/nginx), Dockerfiles, README.md, .env.example.
 
-## User Personas
-- **Treasurer (admin)**: records transactions, runs reports, manages users and all settings.
-- **Additional users**: record transactions and run reports; cannot manage users.
-
-## Core Requirements (static)
-- Multi bank-account tracking (masked labels), add/rename/deactivate, opening balances.
-- Funds, categories, payees, chart of accounts — all CRUD manageable.
-- Record income / expense (Check #, Payee, Memo) / transfer.
-- Transaction list: search, filter (account/type/fund/category/date), edit, delete.
-- Dashboard: per-account + per-fund balances, recent activity.
-- Monthly treasurer's report: custom date range + presets, selectable accounts, printable + PDF, optional category/fund sections. Reconciles.
+## Permissions / Roles
+- Permissions: transactions.view, transactions.manage, reports.view, settings.manage, users.manage, data.manage.
+- Built-in roles seeded on setup: Administrator (all, is_system), Bookkeeper, Viewer. Admin can create custom roles.
+- Enforced backend (require_permission deps) and gated in frontend (can() + visible nav/buttons).
 
 ## Implemented
-### 2026-06 — MVP
-- JWT auth, admin seeding (rgblack@gmail.com), user management (admin-only).
-- Accounts/Funds/Categories/Payees/COA CRUD + Church Info settings.
-- Income/Expense/Transfer recording; transaction list with filters/search/edit/delete.
-- Dashboard with balances + recent activity.
-- Treasurer's report (on-screen, print CSS, server-side PDF) with reconciliation verified.
-- Seeded 3 accounts, 3 funds, categories, payees, COA, sample June 2026 transactions.
-
-### 2026-06 — Iteration 2 (CSV Import, Reconciliation, Receipts)
-- **CSV Import**: template download + upload (`/api/import/transactions`); auto-creates payees/categories/funds; reports skipped rows with reasons. UI: ImportDialog on Transactions page.
-- **Bank Reconciliation**: per-transaction `cleared` flag (`PATCH /api/transactions/{id}/cleared`), per-account reconcile summary (`/api/accounts/{id}/reconcile`) with running cleared balance. UI: reconcile bar + cleared checkbox column.
-- **Receipt Attachments**: upload photos (JPG/PNG/HEIC/WEBP) + PDF to any transaction via Emergent object storage; list/view/delete; paperclip indicator in list; soft-delete on transaction delete. Endpoints under `/api/transactions/{id}/attachments` and `/api/attachments/{id}`.
-- Verified: 34/34 backend tests pass; all critical frontend flows pass.
+### MVP (2026-06)
+- Accounts/funds/categories/payees/COA CRUD, income/expense/transfer, dashboard, transactions list, Treasurer's Report (print + PDF).
+### Iteration 2
+- CSV import, bank reconciliation (cleared + running cleared balance), receipt attachments.
+### Iteration 3 (generic / self-host)
+- First-run setup wizard; NO default credentials; strong-password rule (12+, upper/lower/number/symbol).
+- No seeded accounts/transactions/payees; generic categories + General Fund + generic COA seeded on setup; church name blank.
+- Roles & permissions system (built-in + custom), per-user role assignment, strong password on user create/update.
+- Database backup (export JSON) and restore (import JSON, replaces all data) in Settings.
+- README.md, .env.example, docker-compose.yml, backend/frontend Dockerfiles, nginx.conf.
+- Verified: backend 26/26 (+ prior suites), all targeted frontend flows pass; DB wiped for clean first-run handoff.
 
 ## Backlog
-### P1
-- Budgets per category/fund + budget-vs-actual.
-- Year-end & giving-statement reports.
-### P2
-- Recurring transactions.
-- Audit log (who changed what).
-- Data export/backup tools for self-hosting.
-- Deeper double-entry posting via chart of accounts.
+- P1: Budgets per fund/category + budget-vs-actual; year-end giving statements.
+- P2: Recurring transactions; audit log; split server.py into modules; optional local-disk receipt storage to remove cloud dependency.
 
 ## Notes
-- CORS currently `*`; tighten origins before production (low risk — Bearer auth, not cookies).
-- Download endpoint accepts `?auth=<jwt>` for img/window.open; validates signature (single-tenant scope).
-- Sample June 2026 transactions on *3217 are demo data and deletable.
+- DB is intentionally empty on delivery → app shows the setup wizard at /setup.
+- CORS `*` in dev; docker-compose sets CORS_ORIGINS to the frontend origin.
+- Receipts need EMERGENT_LLM_KEY; documented as optional in README.
