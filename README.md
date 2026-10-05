@@ -155,6 +155,13 @@ From **Settings → Backup & Restore** you can:
 Store exported backups somewhere safe (they contain your records and hashed logins). Receipt images
 live in MongoDB and are preserved by the `mongo_data` volume.
 
+### Email backups (off-site copy)
+Under **Settings → Backup & Restore → Email Backups** you can have each nightly backup emailed to the
+treasurer automatically, using your own email account (SMTP — e.g. Gmail with an app password, or your
+church's mail server). Enter the SMTP host/port/username/password, a from and recipient address, pick
+STARTTLS (port 587) or SSL (port 465), and use **Send Test Email** to confirm it works. Nothing leaves
+your server except the email you send through your own provider.
+
 ---
 
 ## 📄 License

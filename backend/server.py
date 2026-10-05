@@ -1491,7 +1491,7 @@ async def send_test_email(user: dict = Depends(require_data)):
             "This is a test email from your Grace Treasury app. If you received this, backup emailing is configured correctly.",
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not send email: {e}")
+        raise HTTPException(status_code=400, detail=f"Could not send email: {e}")
     return {"ok": True}
 
 
@@ -1506,7 +1506,7 @@ async def email_backup(name: str, user: dict = Depends(require_data)):
     try:
         await maybe_email_backup_force(base, cfg)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not send email: {e}")
+        raise HTTPException(status_code=400, detail=f"Could not send email: {e}")
     return {"ok": True}
 
 
