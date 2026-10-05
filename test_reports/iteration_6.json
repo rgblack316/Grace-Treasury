@@ -1,0 +1,23 @@
+{
+  "summary": "Verified .gitignore fix for .env.example: file is on disk, no longer ignored (matched by negation rule !**/.env.example at .gitignore:95), and git add -n confirms it would be committed. Real env files (.env, backend/.env) are still ignored. Content contains JWT_SECRET, DB_NAME, CORS_ORIGINS with placeholder values (no real secrets). Backend health smoke passed: GET /api/auth/setup-status => 200 {\"needs_setup\": true}.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "N/A (skipped per request)"},
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Gitignore negation fix verified. .env.example tracked; real .env files remain ignored. Backend setup-status endpoint healthy and returns needs_setup=true (DB empty).",
+  "verification_details": {
+    "git_check_ignore_env_example": ".gitignore:95:!**/.env.example (negation match, file is tracked)",
+    "git_add_dry_run": "add '.env.example'",
+    "backend_env_still_ignored": ".gitignore:88:*.env matches backend/.env",
+    "root_env_still_ignored": ".gitignore:88:*.env matches .env",
+    "env_example_keys_present": ["JWT_SECRET", "DB_NAME", "CORS_ORIGINS"],
+    "real_secrets_detected": false,
+    "setup_status_response": "HTTP 200 {\"needs_setup\": true}"
+  }
+}
