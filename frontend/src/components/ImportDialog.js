@@ -69,7 +69,7 @@ export default function ImportDialog({ open, onOpenChange, onImported }) {
             <p className="font-medium text-slate-800">How it works</p>
             <ol className="list-decimal list-inside space-y-1">
               <li>Download the template and fill in your rows.</li>
-              <li>Use account labels like <span className="font-mono">*3217</span> or the account name.</li>
+              <li>Use account labels like <span className="font-mono">*1234</span> or the account name.</li>
               <li>New payees, categories, and funds are created automatically.</li>
             </ol>
             <Button variant="outline" size="sm" onClick={downloadTemplate} className="mt-1" data-testid="btn-download-template">

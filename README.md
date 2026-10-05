@@ -15,7 +15,7 @@ installs it starts with a clean, empty database and creates its own administrato
   creates the administrator (treasurer) account with a strong password (12+ characters, upper &
   lower case, a number, and a symbol).
 - **Multiple bank accounts** — add, rename, set opening balances, and deactivate accounts. Account
-  numbers are shown masked (e.g. `*3217`).
+  numbers are shown masked (e.g. `*1234`).
 - **Funds** — track money by purpose (General, Building, Missions, …) independent of which account holds it.
 - **Income / Expense / Transfer** — record expenses with Check #, Payee, Memo/Reason; record income
   and transfers between accounts. Everything is searchable and filterable.
