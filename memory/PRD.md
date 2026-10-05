@@ -27,6 +27,13 @@ Fully offline — no cloud services or API keys required.
 - Iteration 4: receipts in MongoDB GridFS (fully offline); automatic nightly backups (APScheduler) with enable/time/retention + run/list/download/delete/restore server backups; path-traversal guarded; data.manage gated.
 - Verified across iterations by testing agent; latest backend 23/23, no open defects.
 
+### Iteration 5 (email backups)
+- SMTP email backups: configurable host/port/username/password/from/to + STARTTLS/SSL; password masked on read, retained when blank.
+- Endpoints (data.manage): GET/PUT /api/settings/email, POST /api/email/test, POST /api/backups/{name}/email. Nightly job emails the backup when enabled (maybe_email_backup).
+- Settings → Backup & Restore → Email Backups card with Save + Send Test Email.
+- Email/SMTP failures return 400 (not 502) so the real error reaches the UI through the ingress.
+- Verified: backend 14/14; UI persistence/masking/permissions pass.
+
 ## Backlog
 - P1: Budgets per fund/category + budget-vs-actual; year-end giving statements.
 - P2: Recurring transactions; audit log; split server.py and Settings.js into modules.
