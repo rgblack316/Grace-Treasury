@@ -4,38 +4,34 @@
 Self-hostable, generic church treasury app. Track income/expenses/transfers across bank accounts,
 reconcile, attach receipts, import CSV, produce printable/PDF monthly Treasurer's Reports. Distributed
 via GitHub + Docker Compose; each church starts with an empty DB and runs a first-run setup wizard.
+Fully offline — no cloud services or API keys required.
 
 ## Architecture
 - Backend: FastAPI (`/app/backend/server.py`), MongoDB (motor). Routes under `/api`.
-- Frontend: React 19 + CRACO, Tailwind, shadcn/ui, Spectral/IBM Plex Sans/JetBrains Mono.
+- Frontend: React 19 + CRACO, Tailwind, shadcn/ui.
 - Auth: JWT Bearer (localStorage `ct_token`), bcrypt. First user = Administrator via setup wizard.
-- Receipts: Emergent object storage (requires EMERGENT_LLM_KEY); all other data in local MongoDB.
+- Receipts: MongoDB GridFS (`fs_bucket`) — local, persists in mongo_data volume.
+- Scheduled backups: APScheduler nightly job -> JSON files in BACKUP_DIR (configurable).
 - PDF: reportlab, letter size.
 - Distribution: docker-compose.yml (mongo + backend + frontend/nginx), Dockerfiles, README.md, .env.example.
 
 ## Permissions / Roles
 - Permissions: transactions.view, transactions.manage, reports.view, settings.manage, users.manage, data.manage.
-- Built-in roles seeded on setup: Administrator (all, is_system), Bookkeeper, Viewer. Admin can create custom roles.
-- Enforced backend (require_permission deps) and gated in frontend (can() + visible nav/buttons).
+- Built-in roles: Administrator (all, is_system), Bookkeeper, Viewer. Admin can create custom roles.
+- Enforced backend (require_permission deps) + gated frontend (can()).
 
 ## Implemented
-### MVP (2026-06)
-- Accounts/funds/categories/payees/COA CRUD, income/expense/transfer, dashboard, transactions list, Treasurer's Report (print + PDF).
-### Iteration 2
-- CSV import, bank reconciliation (cleared + running cleared balance), receipt attachments.
-### Iteration 3 (generic / self-host)
-- First-run setup wizard; NO default credentials; strong-password rule (12+, upper/lower/number/symbol).
-- No seeded accounts/transactions/payees; generic categories + General Fund + generic COA seeded on setup; church name blank.
-- Roles & permissions system (built-in + custom), per-user role assignment, strong password on user create/update.
-- Database backup (export JSON) and restore (import JSON, replaces all data) in Settings.
-- README.md, .env.example, docker-compose.yml, backend/frontend Dockerfiles, nginx.conf.
-- Verified: backend 26/26 (+ prior suites), all targeted frontend flows pass; DB wiped for clean first-run handoff.
+- MVP: accounts/funds/categories/payees/COA CRUD, income/expense/transfer, dashboard, transactions list, Treasurer's Report (print + PDF).
+- Iteration 2: CSV import, bank reconciliation (cleared + running cleared balance), receipt attachments.
+- Iteration 3: first-run setup wizard, no default creds, strong-password rule; no seeded accounts/transactions (generic categories/fund/COA only); roles & permissions; DB export/import; Docker/README distribution.
+- Iteration 4: receipts in MongoDB GridFS (fully offline); automatic nightly backups (APScheduler) with enable/time/retention + run/list/download/delete/restore server backups; path-traversal guarded; data.manage gated.
+- Verified across iterations by testing agent; latest backend 23/23, no open defects.
 
 ## Backlog
 - P1: Budgets per fund/category + budget-vs-actual; year-end giving statements.
-- P2: Recurring transactions; audit log; split server.py into modules; optional local-disk receipt storage to remove cloud dependency.
+- P2: Recurring transactions; audit log; split server.py and Settings.js into modules.
 
 ## Notes
-- DB is intentionally empty on delivery → app shows the setup wizard at /setup.
-- CORS `*` in dev; docker-compose sets CORS_ORIGINS to the frontend origin.
-- Receipts need EMERGENT_LLM_KEY; documented as optional in README.
+- DB intentionally empty on delivery -> setup wizard at /setup.
+- BACKUP_DIR defaults to backend/backups; docker-compose mounts ./backups volume.
+- No cloud keys needed; receipts live in MongoDB.
