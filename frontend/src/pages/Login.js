@@ -8,12 +8,16 @@ import { Label } from "@/components/ui/label";
 import { Landmark, Loader2 } from "lucide-react";
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, needsSetup, ready } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  if (ready && needsSetup) {
+    navigate("/setup", { replace: true });
+  }
 
   const submit = async (e) => {
     e.preventDefault();

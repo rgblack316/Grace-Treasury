@@ -15,20 +15,23 @@ import api from "@/lib/api";
 import TransactionDialog from "@/components/TransactionDialog";
 
 const tabs = [
-  { name: "Dashboard", path: "/", icon: LayoutDashboard, testid: "nav-item-dashboard" },
-  { name: "Transactions", path: "/transactions", icon: ListOrdered, testid: "nav-item-transactions" },
-  { name: "Reports", path: "/reports", icon: FileText, testid: "nav-item-reports" },
-  { name: "Settings", path: "/settings", icon: SettingsIcon, testid: "nav-item-settings" },
+  { name: "Dashboard", path: "/", icon: LayoutDashboard, testid: "nav-item-dashboard", perm: "transactions.view" },
+  { name: "Transactions", path: "/transactions", icon: ListOrdered, testid: "nav-item-transactions", perm: "transactions.view" },
+  { name: "Reports", path: "/reports", icon: FileText, testid: "nav-item-reports", perm: "reports.view" },
+  { name: "Settings", path: "/settings", icon: SettingsIcon, testid: "nav-item-settings", perm: "settings.any" },
 ];
 
 export default function Layout() {
-  const { user, logout } = useAuth();
+  const { user, logout, can } = useAuth();
   const [quickOpen, setQuickOpen] = useState(false);
   const [churchName, setChurchName] = useState("Church Treasury");
 
   useEffect(() => {
     api.get("/settings/church").then((r) => r.data?.church_name && setChurchName(r.data.church_name)).catch(() => {});
   }, []);
+
+  const settingsAny = can("settings.manage") || can("users.manage") || can("data.manage");
+  const visibleTabs = tabs.filter((t) => (t.perm === "settings.any" ? settingsAny : can(t.perm)));
 
   return (
     <div className="min-h-screen bg-background">
@@ -42,7 +45,7 @@ export default function Layout() {
           </div>
 
           <nav className="flex items-center gap-1">
-            {tabs.map((t) => (
+            {visibleTabs.map((t) => (
               <NavLink
                 key={t.path}
                 to={t.path}
@@ -61,10 +64,12 @@ export default function Layout() {
           </nav>
 
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => setQuickOpen(true)} className="bg-[#D97706] hover:bg-[#B45309]" data-testid="btn-quick-add-transaction">
-              <Plus className="h-4 w-4 sm:mr-1.5" />
-              <span className="hidden sm:inline">New Entry</span>
-            </Button>
+            {can("transactions.manage") && (
+              <Button size="sm" onClick={() => setQuickOpen(true)} className="bg-[#D97706] hover:bg-[#B45309]" data-testid="btn-quick-add-transaction">
+                <Plus className="h-4 w-4 sm:mr-1.5" />
+                <span className="hidden sm:inline">New Entry</span>
+              </Button>
+            )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="rounded-full" data-testid="user-menu-trigger">

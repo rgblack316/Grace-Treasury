@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import api from "@/lib/api";
 import { money, fmtDate } from "@/lib/format";
 import { useSearchParams } from "react-router-dom";
+import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,8 @@ import { Search, Pencil, Trash2, Plus, X, Upload, Paperclip, Scale } from "lucid
 const ALL = "__all__";
 
 export default function Transactions() {
+  const { can } = useAuth();
+  const canManage = can("transactions.manage");
   const [params, setParams] = useSearchParams();
   const [txns, setTxns] = useState([]);
   const [lists, setLists] = useState({ accounts: [], funds: [], categories: [], payees: [] });
@@ -145,12 +148,16 @@ export default function Transactions() {
           <p className="text-muted-foreground mt-1">Browse, search, reconcile, and manage every entry.</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setImportOpen(true)} data-testid="btn-open-import">
-            <Upload className="h-4 w-4 mr-1.5" /> Import
-          </Button>
-          <Button onClick={() => { setEditing(null); setDialogOpen(true); }} className="bg-[#D97706] hover:bg-[#B45309]" data-testid="btn-add-transaction">
-            <Plus className="h-4 w-4 mr-1.5" /> New Entry
-          </Button>
+          {canManage && (
+            <Button variant="outline" onClick={() => setImportOpen(true)} data-testid="btn-open-import">
+              <Upload className="h-4 w-4 mr-1.5" /> Import
+            </Button>
+          )}
+          {canManage && (
+            <Button onClick={() => { setEditing(null); setDialogOpen(true); }} className="bg-[#D97706] hover:bg-[#B45309]" data-testid="btn-add-transaction">
+              <Plus className="h-4 w-4 mr-1.5" /> New Entry
+            </Button>
+          )}
         </div>
       </div>
 
@@ -240,7 +247,7 @@ export default function Transactions() {
             {txns.map((t) => (
               <TableRow key={t.id} data-testid={`txn-row-${t.id}`} className={t.cleared ? "bg-[#F0FDF4]/40" : ""}>
                 <TableCell className="text-center">
-                  <Checkbox checked={!!t.cleared} onCheckedChange={(c) => toggleCleared(t, !!c)} data-testid={`cleared-${t.id}`} />
+                  <Checkbox checked={!!t.cleared} disabled={!canManage} onCheckedChange={(c) => toggleCleared(t, !!c)} data-testid={`cleared-${t.id}`} />
                 </TableCell>
                 <TableCell className="font-mono text-sm whitespace-nowrap">{fmtDate(t.date)}</TableCell>
                 <TableCell>{typeBadge(t.type)}</TableCell>
@@ -255,12 +262,18 @@ export default function Transactions() {
                 <TableCell className="text-sm">{maps.cat[t.category_id] || "—"}</TableCell>
                 <TableCell className="text-right font-mono font-medium whitespace-nowrap">{signed(t)}</TableCell>
                 <TableCell className="text-right whitespace-nowrap">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(t); setDialogOpen(true); }} data-testid={`btn-edit-${t.id}`}>
-                    <Pencil className="h-4 w-4" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => setDeleteId(t.id)} data-testid={`btn-delete-${t.id}`}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+                  {canManage ? (
+                    <>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(t); setDialogOpen(true); }} data-testid={`btn-edit-${t.id}`}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => setDeleteId(t.id)} data-testid={`btn-delete-${t.id}`}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  )}
                 </TableCell>
               </TableRow>
             ))}

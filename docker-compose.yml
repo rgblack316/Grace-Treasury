@@ -1,0 +1,44 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - treasury
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      - MONGO_URL=mongodb://mongo:27017
+      - DB_NAME=${DB_NAME:-church_treasury}
+      - JWT_SECRET=${JWT_SECRET}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8080}
+      - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY:-}
+    networks:
+      - treasury
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # The browser talks to the backend through the frontend's /api proxy,
+        # so the public URL is the frontend origin itself.
+        REACT_APP_BACKEND_URL: ${CORS_ORIGINS:-http://localhost:8080}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    networks:
+      - treasury
+
+volumes:
+  mongo_data:
+
+networks:
+  treasury:
+    driver: bridge

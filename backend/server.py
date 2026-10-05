@@ -36,7 +36,9 @@ db = client[os.environ['DB_NAME']]
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
 
-# ----------------------------- Object storage -----------------------------
+# ----------------------------- Object storage (receipts) -----------------------------
+import re
+
 STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
 STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
@@ -89,6 +91,25 @@ def get_object(path: str):
     resp.raise_for_status()
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
+
+# ----------------------------- Permissions -----------------------------
+ALL_PERMISSIONS = [
+    "transactions.view",
+    "transactions.manage",
+    "reports.view",
+    "settings.manage",
+    "users.manage",
+    "data.manage",
+]
+PERMISSION_LABELS = {
+    "transactions.view": "View transactions, dashboard and balances",
+    "transactions.manage": "Add, edit, delete, import transactions and reconcile",
+    "reports.view": "View, print and export reports",
+    "settings.manage": "Manage accounts, funds, categories, payees and chart of accounts",
+    "users.manage": "Manage users and roles",
+    "data.manage": "Back up and restore the database",
+}
+
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
@@ -118,6 +139,17 @@ def create_access_token(user_id: str, email: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
+async def resolve_permissions(user: dict):
+    if user.get("role") == "admin":
+        return list(ALL_PERMISSIONS), "Administrator"
+    role = None
+    if user.get("role_id"):
+        role = await db.roles.find_one({"id": user["role_id"]}, {"_id": 0})
+    if role:
+        return list(role.get("permissions", [])), role.get("name", "")
+    return [], user.get("role", "")
+
+
 async def get_current_user(request: Request) -> dict:
     auth_header = request.headers.get("Authorization", "")
     token = auth_header[7:] if auth_header.startswith("Bearer ") else None
@@ -132,13 +164,40 @@ async def get_current_user(request: Request) -> dict:
     user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    perms, role_name = await resolve_permissions(user)
+    user["permissions"] = perms
+    user["role_name"] = role_name
     return user
 
 
-async def require_admin(user: dict = Depends(get_current_user)) -> dict:
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Only the treasurer (admin) can manage users")
-    return user
+def require_permission(permission: str):
+    async def dependency(user: dict = Depends(get_current_user)) -> dict:
+        if permission not in user.get("permissions", []):
+            raise HTTPException(status_code=403, detail="You do not have permission to perform this action")
+        return user
+    return dependency
+
+
+require_txn_view = require_permission("transactions.view")
+require_txn_manage = require_permission("transactions.manage")
+require_reports = require_permission("reports.view")
+require_settings = require_permission("settings.manage")
+require_users = require_permission("users.manage")
+require_data = require_permission("data.manage")
+
+
+def validate_strong_password(pw: str):
+    if (
+        len(pw) < 12
+        or not re.search(r"[A-Z]", pw)
+        or not re.search(r"[a-z]", pw)
+        or not re.search(r"\d", pw)
+        or not re.search(r"[^A-Za-z0-9]", pw)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be at least 12 characters and include an uppercase letter, a lowercase letter, a number, and a symbol.",
+        )
 
 
 # ----------------------------- Models -----------------------------
@@ -151,7 +210,24 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
     name: str
-    role: str = "user"
+    role_id: Optional[str] = None
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    role_id: Optional[str] = None
+    password: Optional[str] = None
+
+
+class SetupInput(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+
+
+class RoleInput(BaseModel):
+    name: str
+    permissions: List[str] = []
 
 
 class AccountInput(BaseModel):
@@ -258,17 +334,47 @@ async def balance_before(account: dict, start: str) -> float:
     return round(bal, 2)
 
 
+async def shape_user(user: dict):
+    perms, role_name = await resolve_permissions(user)
+    return {
+        "id": user["id"], "email": user["email"], "name": user["name"],
+        "role": user.get("role", "user"), "role_id": user.get("role_id"),
+        "role_name": role_name, "permissions": perms,
+    }
+
+
 # ----------------------------- Auth routes -----------------------------
+@api_router.get("/auth/setup-status")
+async def setup_status():
+    count = await db.users.count_documents({})
+    return {"needs_setup": count == 0}
+
+
+@api_router.post("/auth/setup")
+async def setup(data: SetupInput):
+    if await db.users.count_documents({}) > 0:
+        raise HTTPException(status_code=400, detail="Setup has already been completed")
+    validate_strong_password(data.password)
+    await seed_starter_data()
+    admin_role = await db.roles.find_one({"name": "Administrator"})
+    uid = new_id()
+    doc = {
+        "id": uid, "email": data.email.lower(), "name": data.name,
+        "role": "admin", "role_id": admin_role["id"] if admin_role else None,
+        "password_hash": hash_password(data.password), "created_at": now_iso(),
+    }
+    await db.users.insert_one(doc)
+    token = create_access_token(uid, doc["email"])
+    return {"token": token, "user": await shape_user(doc)}
+
+
 @api_router.post("/auth/login")
 async def login(data: LoginInput):
     user = await db.users.find_one({"email": data.email.lower()})
     if not user or not verify_password(data.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_access_token(user["id"], user["email"])
-    return {
-        "token": token,
-        "user": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"]},
-    }
+    return {"token": token, "user": await shape_user(user)}
 
 
 @api_router.get("/auth/me")
@@ -276,31 +382,113 @@ async def me(user: dict = Depends(get_current_user)):
     return user
 
 
+@api_router.get("/permissions")
+async def list_permissions(user: dict = Depends(require_users)):
+    return [{"key": k, "label": PERMISSION_LABELS[k]} for k in ALL_PERMISSIONS]
+
+
+# ----------------------------- Roles -----------------------------
+@api_router.get("/roles")
+async def list_roles(user: dict = Depends(get_current_user)):
+    roles = await db.roles.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
+    counts = {}
+    async for u in db.users.find({}, {"_id": 0, "role_id": 1}):
+        rid = u.get("role_id")
+        if rid:
+            counts[rid] = counts.get(rid, 0) + 1
+    for r in roles:
+        r["user_count"] = counts.get(r["id"], 0)
+    return roles
+
+
+@api_router.post("/roles")
+async def create_role(data: RoleInput, user: dict = Depends(require_users)):
+    perms = [p for p in data.permissions if p in ALL_PERMISSIONS]
+    doc = {"id": new_id(), "name": data.name.strip(), "permissions": perms, "is_system": False, "created_at": now_iso()}
+    await db.roles.insert_one(doc)
+    return clean(doc)
+
+
+@api_router.put("/roles/{role_id}")
+async def update_role(role_id: str, data: RoleInput, user: dict = Depends(require_users)):
+    role = await db.roles.find_one({"id": role_id})
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if role.get("is_system"):
+        raise HTTPException(status_code=400, detail="The Administrator role cannot be modified")
+    perms = [p for p in data.permissions if p in ALL_PERMISSIONS]
+    await db.roles.update_one({"id": role_id}, {"$set": {"name": data.name.strip(), "permissions": perms}})
+    return await db.roles.find_one({"id": role_id}, {"_id": 0})
+
+
+@api_router.delete("/roles/{role_id}")
+async def delete_role(role_id: str, user: dict = Depends(require_users)):
+    role = await db.roles.find_one({"id": role_id})
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if role.get("is_system"):
+        raise HTTPException(status_code=400, detail="The Administrator role cannot be deleted")
+    if await db.users.count_documents({"role_id": role_id}) > 0:
+        raise HTTPException(status_code=400, detail="This role is assigned to one or more users. Reassign them first.")
+    await db.roles.delete_one({"id": role_id})
+    return {"ok": True}
+
+
+# ----------------------------- Users -----------------------------
 @api_router.get("/auth/users")
-async def list_users(user: dict = Depends(require_admin)):
+async def list_users(user: dict = Depends(require_users)):
     users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    roles = {r["id"]: r["name"] for r in await db.roles.find({}, {"_id": 0}).to_list(1000)}
+    for u in users:
+        u["role_name"] = "Administrator" if u.get("role") == "admin" else roles.get(u.get("role_id"), "")
     return users
 
 
 @api_router.post("/auth/users")
-async def create_user(data: UserCreate, user: dict = Depends(require_admin)):
+async def create_user(data: UserCreate, user: dict = Depends(require_users)):
     existing = await db.users.find_one({"email": data.email.lower()})
     if existing:
         raise HTTPException(status_code=400, detail="A user with this email already exists")
+    validate_strong_password(data.password)
+    role = await db.roles.find_one({"id": data.role_id}) if data.role_id else None
     doc = {
         "id": new_id(),
         "email": data.email.lower(),
         "name": data.name,
-        "role": data.role if data.role in ("admin", "user") else "user",
+        "role": "admin" if (role and role.get("is_system")) else "user",
+        "role_id": data.role_id,
         "password_hash": hash_password(data.password),
         "created_at": now_iso(),
     }
     await db.users.insert_one(doc)
-    return {"id": doc["id"], "email": doc["email"], "name": doc["name"], "role": doc["role"]}
+    return await shape_user(doc)
+
+
+@api_router.put("/auth/users/{user_id}")
+async def update_user(user_id: str, data: UserUpdate, user: dict = Depends(require_users)):
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    update = {}
+    if data.name is not None:
+        update["name"] = data.name
+    if data.role_id is not None:
+        if user_id == user["id"] and target.get("role") == "admin":
+            raise HTTPException(status_code=400, detail="You cannot change your own administrator role")
+        role = await db.roles.find_one({"id": data.role_id})
+        update["role_id"] = data.role_id
+        update["role"] = "admin" if (role and role.get("is_system")) else "user"
+    if data.password:
+        validate_strong_password(data.password)
+        update["password_hash"] = hash_password(data.password)
+    if update:
+        await db.users.update_one({"id": user_id}, {"$set": update})
+    updated = await db.users.find_one({"id": user_id})
+    return await shape_user(updated)
 
 
 @api_router.delete("/auth/users/{user_id}")
-async def delete_user(user_id: str, user: dict = Depends(require_admin)):
+async def delete_user(user_id: str, user: dict = Depends(require_users)):
     if user_id == user["id"]:
         raise HTTPException(status_code=400, detail="You cannot delete your own account")
     target = await db.users.find_one({"id": user_id})
@@ -318,7 +506,7 @@ def register_crud(path: str, collection: str, model):
         return items
 
     @api_router.post(f"/{path}")
-    async def create_item(data: model, user: dict = Depends(get_current_user), _coll=collection):
+    async def create_item(data: model, user: dict = Depends(require_settings), _coll=collection):
         doc = data.model_dump()
         doc["id"] = new_id()
         doc["created_at"] = now_iso()
@@ -326,7 +514,7 @@ def register_crud(path: str, collection: str, model):
         return clean(doc)
 
     @api_router.put(f"/{path}/{{item_id}}")
-    async def update_item(item_id: str, data: model, user: dict = Depends(get_current_user), _coll=collection):
+    async def update_item(item_id: str, data: model, user: dict = Depends(require_settings), _coll=collection):
         existing = await db[_coll].find_one({"id": item_id})
         if not existing:
             raise HTTPException(status_code=404, detail="Not found")
@@ -335,7 +523,7 @@ def register_crud(path: str, collection: str, model):
         return updated
 
     @api_router.delete(f"/{path}/{{item_id}}")
-    async def delete_item(item_id: str, user: dict = Depends(get_current_user), _coll=collection):
+    async def delete_item(item_id: str, user: dict = Depends(require_settings), _coll=collection):
         await db[_coll].delete_one({"id": item_id})
         return {"ok": True}
 
@@ -350,7 +538,7 @@ register_crud("coa", "coa", CoaInput)
 # ----------------------------- Transactions -----------------------------
 @api_router.get("/transactions")
 async def list_transactions(
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_txn_view),
     account_id: Optional[str] = None,
     fund_id: Optional[str] = None,
     category_id: Optional[str] = None,
@@ -400,7 +588,7 @@ async def list_transactions(
 
 
 @api_router.post("/transactions")
-async def create_transaction(data: TransactionInput, user: dict = Depends(get_current_user)):
+async def create_transaction(data: TransactionInput, user: dict = Depends(require_txn_manage)):
     if data.type == "transfer" and not data.to_account_id:
         raise HTTPException(status_code=400, detail="Transfer requires a destination account")
     doc = data.model_dump()
@@ -412,7 +600,7 @@ async def create_transaction(data: TransactionInput, user: dict = Depends(get_cu
 
 
 @api_router.put("/transactions/{txn_id}")
-async def update_transaction(txn_id: str, data: TransactionInput, user: dict = Depends(get_current_user)):
+async def update_transaction(txn_id: str, data: TransactionInput, user: dict = Depends(require_txn_manage)):
     existing = await db.transactions.find_one({"id": txn_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -422,7 +610,7 @@ async def update_transaction(txn_id: str, data: TransactionInput, user: dict = D
 
 
 @api_router.delete("/transactions/{txn_id}")
-async def delete_transaction(txn_id: str, user: dict = Depends(get_current_user)):
+async def delete_transaction(txn_id: str, user: dict = Depends(require_txn_manage)):
     await db.transactions.delete_one({"id": txn_id})
     await db.files.update_many({"transaction_id": txn_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
@@ -433,7 +621,7 @@ class ClearedInput(BaseModel):
 
 
 @api_router.patch("/transactions/{txn_id}/cleared")
-async def set_cleared(txn_id: str, data: ClearedInput, user: dict = Depends(get_current_user)):
+async def set_cleared(txn_id: str, data: ClearedInput, user: dict = Depends(require_txn_manage)):
     existing = await db.transactions.find_one({"id": txn_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -443,7 +631,7 @@ async def set_cleared(txn_id: str, data: ClearedInput, user: dict = Depends(get_
 
 # ----------------------------- Reconciliation summary -----------------------------
 @api_router.get("/accounts/{account_id}/reconcile")
-async def reconcile_summary(account_id: str, user: dict = Depends(get_current_user)):
+async def reconcile_summary(account_id: str, user: dict = Depends(require_txn_view)):
     acc = await db.accounts.find_one({"id": account_id}, {"_id": 0})
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -470,7 +658,7 @@ async def reconcile_summary(account_id: str, user: dict = Depends(get_current_us
 
 # ----------------------------- Receipt attachments -----------------------------
 @api_router.post("/transactions/{txn_id}/attachments")
-async def upload_attachment(txn_id: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+async def upload_attachment(txn_id: str, file: UploadFile = File(...), user: dict = Depends(require_txn_manage)):
     txn = await db.transactions.find_one({"id": txn_id})
     if not txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -502,7 +690,7 @@ async def upload_attachment(txn_id: str, file: UploadFile = File(...), user: dic
 
 
 @api_router.get("/transactions/{txn_id}/attachments")
-async def list_attachments(txn_id: str, user: dict = Depends(get_current_user)):
+async def list_attachments(txn_id: str, user: dict = Depends(require_txn_view)):
     files = await db.files.find({"transaction_id": txn_id, "is_deleted": False}, {"_id": 0, "storage_path": 0}).to_list(100)
     return files
 
@@ -527,7 +715,7 @@ async def download_attachment(file_id: str, request: Request, auth: Optional[str
 
 
 @api_router.delete("/attachments/{file_id}")
-async def delete_attachment(file_id: str, user: dict = Depends(get_current_user)):
+async def delete_attachment(file_id: str, user: dict = Depends(require_txn_manage)):
     await db.files.update_one({"id": file_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
 
@@ -537,7 +725,7 @@ IMPORT_COLUMNS = ["Date", "Type", "Account", "To Account", "Amount", "Check#", "
 
 
 @api_router.get("/import/template")
-async def import_template(user: dict = Depends(get_current_user)):
+async def import_template(user: dict = Depends(require_txn_manage)):
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(IMPORT_COLUMNS)
@@ -565,7 +753,7 @@ def parse_date(s: str) -> Optional[str]:
 
 
 @api_router.post("/import/transactions")
-async def import_transactions(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+async def import_transactions(file: UploadFile = File(...), user: dict = Depends(require_txn_manage)):
     raw = (await file.read()).decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(raw))
 
@@ -677,7 +865,7 @@ async def import_transactions(file: UploadFile = File(...), user: dict = Depends
 
 # ----------------------------- Dashboard -----------------------------
 @api_router.get("/dashboard")
-async def dashboard(user: dict = Depends(get_current_user)):
+async def dashboard(user: dict = Depends(require_txn_view)):
     accounts = await db.accounts.find({}, {"_id": 0}).to_list(1000)
     account_balances = []
     total = 0.0
@@ -822,7 +1010,7 @@ async def treasurer_report(
     start: str = Query(...),
     end: str = Query(...),
     account_ids: str = Query(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_reports),
 ):
     ids = [i for i in account_ids.split(",") if i]
     return await build_report(start, end, ids)
@@ -847,7 +1035,7 @@ async def treasurer_report_pdf(
     account_ids: str = Query(...),
     include_category: bool = Query(False),
     include_funds: bool = Query(False),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_reports),
 ):
     ids = [i for i in account_ids.split(",") if i]
     report = await build_report(start, end, ids)
@@ -992,10 +1180,57 @@ async def get_church(user: dict = Depends(get_current_user)):
 
 
 @api_router.put("/settings/church")
-async def update_church(data: ChurchSettings, user: dict = Depends(get_current_user)):
+async def update_church(data: ChurchSettings, user: dict = Depends(require_settings)):
     doc = {"id": "church", **data.model_dump()}
     await db.settings.update_one({"id": "church"}, {"$set": doc}, upsert=True)
     return doc
+
+
+# ----------------------------- Data backup / restore -----------------------------
+EXPORT_COLLECTIONS = ["users", "roles", "accounts", "funds", "categories", "payees", "coa", "transactions", "files", "settings"]
+
+
+@api_router.get("/data/export")
+async def export_data(user: dict = Depends(require_data)):
+    payload = {"version": 1, "app": "church-treasury", "exported_at": now_iso(), "data": {}}
+    for coll in EXPORT_COLLECTIONS:
+        docs = await db[coll].find({}, {"_id": 0}).to_list(100000)
+        payload["data"][coll] = docs
+    import json as _json
+    body = _json.dumps(payload, indent=2)
+    filename = f"church-treasury-backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@api_router.post("/data/import")
+async def import_data(file: UploadFile = File(...), user: dict = Depends(require_data)):
+    import json as _json
+    try:
+        payload = _json.loads((await file.read()).decode("utf-8-sig", errors="replace"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="This file is not a valid backup (JSON could not be read)")
+    data = payload.get("data")
+    if not isinstance(data, dict) or "users" not in data:
+        raise HTTPException(status_code=400, detail="This does not look like a Church Treasury backup file")
+    if not isinstance(data.get("users"), list) or len(data["users"]) == 0:
+        raise HTTPException(status_code=400, detail="The backup has no users — restoring it would lock you out")
+
+    counts = {}
+    for coll in EXPORT_COLLECTIONS:
+        docs = data.get(coll)
+        if not isinstance(docs, list):
+            continue
+        await db[coll].delete_many({})
+        if docs:
+            for d in docs:
+                d.pop("_id", None)
+            await db[coll].insert_many(docs)
+        counts[coll] = len(docs)
+    return {"ok": True, "restored": counts}
 
 
 @api_router.get("/")
@@ -1015,110 +1250,60 @@ app.add_middleware(
 
 
 # ----------------------------- Seeding -----------------------------
-async def seed():
+async def ensure_indexes():
     await db.users.create_index("email", unique=True)
 
-    admin_email = os.environ["ADMIN_EMAIL"].lower()
-    admin_password = os.environ["ADMIN_PASSWORD"]
-    existing = await db.users.find_one({"email": admin_email})
-    if not existing:
-        await db.users.insert_one({
-            "id": new_id(), "email": admin_email, "name": "Treasurer",
-            "role": "admin", "password_hash": hash_password(admin_password),
-            "created_at": now_iso(),
-        })
-        logger.info("Seeded admin user")
 
-    if await db.accounts.count_documents({}) == 0:
-        accounts = [
-            {"id": new_id(), "name": "General Operating Checking", "mask": "*3217", "opening_balance": 76880.68, "opening_date": "2025-12-31", "active": True, "created_at": now_iso()},
-            {"id": new_id(), "name": "Savings", "mask": "*6715", "opening_balance": 54375.81, "opening_date": "2025-12-31", "active": True, "created_at": now_iso()},
-            {"id": new_id(), "name": "Building Fund Savings", "mask": "*1180", "opening_balance": 0.0, "opening_date": "2025-12-31", "active": True, "created_at": now_iso()},
-        ]
-        await db.accounts.insert_many(accounts)
-        acc_checking = accounts[0]["id"]
+async def seed_starter_data():
+    """Create generic, church-agnostic starter data on first setup.
+    No bank accounts, payees, or transactions are created."""
+    # Roles
+    if await db.roles.count_documents({}) == 0:
+        await db.roles.insert_many([
+            {"id": new_id(), "name": "Administrator", "permissions": list(ALL_PERMISSIONS), "is_system": True, "created_at": now_iso()},
+            {"id": new_id(), "name": "Bookkeeper", "permissions": ["transactions.view", "transactions.manage", "reports.view"], "is_system": False, "created_at": now_iso()},
+            {"id": new_id(), "name": "Viewer", "permissions": ["transactions.view", "reports.view"], "is_system": False, "created_at": now_iso()},
+        ])
 
-        funds = [
-            {"id": new_id(), "name": "General Fund", "description": "Day-to-day operating fund", "active": True, "created_at": now_iso()},
-            {"id": new_id(), "name": "Building Fund", "description": "Property and building projects", "active": True, "created_at": now_iso()},
-            {"id": new_id(), "name": "Missions Fund", "description": "Missions and outreach giving", "active": True, "created_at": now_iso()},
-        ]
-        await db.funds.insert_many(funds)
-        general_fund = funds[0]["id"]
+    # Generic funds
+    if await db.funds.count_documents({}) == 0:
+        await db.funds.insert_one({"id": new_id(), "name": "General Fund", "description": "Day-to-day operating fund", "active": True, "created_at": now_iso()})
 
-        income_cats = ["Deposit", "Interest Paid", "Tithes & Offerings"]
-        expense_cats = ["Utilities", "Donations / Missions", "Maintenance", "Supplies", "Salary", "Insurance", "Cleaning", "Literature"]
+    # Generic categories
+    if await db.categories.count_documents({}) == 0:
+        income_cats = ["Tithes & Offerings", "Deposit", "Interest Paid", "Designated Gift"]
+        expense_cats = ["Utilities", "Missions & Donations", "Maintenance", "Supplies", "Salary", "Insurance", "Cleaning", "Literature"]
         cats = [{"id": new_id(), "name": n, "type": "income", "active": True, "created_at": now_iso()} for n in income_cats]
         cats += [{"id": new_id(), "name": n, "type": "expense", "active": True, "created_at": now_iso()} for n in expense_cats]
         await db.categories.insert_many(cats)
-        cat_by_name = {c["name"]: c["id"] for c in cats}
 
-        payee_names = [
-            "William Spears", "Frontier Communications", "Mason County PSD", "Hope Gas",
-            "Appalachian Power (Church)", "Appalachian Power (Lights)", "St. Jude Donation",
-            "ECCHO Donation", "CEF of Greater Huntington", "Rock of Ages Ministry",
-            "Our Daily Bread Ministries", "Henderson Insurance", "Jodi Sovine Mowing",
-            "Walmart", "Sam's Club", "Amazon",
-        ]
-        payees = [{"id": new_id(), "name": n, "active": True, "created_at": now_iso()} for n in payee_names]
-        await db.payees.insert_many(payees)
-        payee_by_name = {p["name"]: p["id"] for p in payees}
-
+    # Generic chart of accounts (no specific bank accounts)
+    if await db.coa.count_documents({}) == 0:
         coa = [
-            {"code": "1000", "name": "General Operating Checking", "group": "Asset"},
-            {"code": "1010", "name": "Savings", "group": "Asset"},
-            {"code": "1020", "name": "Building Fund Savings", "group": "Asset"},
+            {"code": "1000", "name": "Checking Account", "group": "Asset"},
+            {"code": "1010", "name": "Savings Account", "group": "Asset"},
             {"code": "2000", "name": "Accounts Payable", "group": "Liability"},
             {"code": "3000", "name": "General Fund Balance", "group": "Equity"},
-            {"code": "3010", "name": "Building Fund Balance", "group": "Equity"},
-            {"code": "3020", "name": "Missions Fund Balance", "group": "Equity"},
             {"code": "4000", "name": "Tithes & Offerings", "group": "Income"},
             {"code": "4010", "name": "Deposit", "group": "Income"},
             {"code": "4020", "name": "Interest Paid", "group": "Income"},
             {"code": "5000", "name": "Utilities", "group": "Expense"},
-            {"code": "5010", "name": "Donations / Missions", "group": "Expense"},
+            {"code": "5010", "name": "Missions & Donations", "group": "Expense"},
             {"code": "5020", "name": "Maintenance", "group": "Expense"},
             {"code": "5030", "name": "Supplies", "group": "Expense"},
             {"code": "5040", "name": "Salary", "group": "Expense"},
             {"code": "5050", "name": "Insurance", "group": "Expense"},
-            {"code": "5060", "name": "Cleaning", "group": "Expense"},
         ]
         await db.coa.insert_many([{**c, "id": new_id(), "active": True, "created_at": now_iso()} for c in coa])
 
-        # sample transactions for June 2026 on checking to populate the first report
-        samples = [
-            {"type": "expense", "date": "2026-06-03", "amount": 144.76, "payee": "Frontier Communications", "check_number": "4035", "category": "Utilities", "memo": "Internet/Phone Service"},
-            {"type": "expense", "date": "2026-06-08", "amount": 69.10, "payee": "Hope Gas", "check_number": "4038", "category": "Utilities", "memo": "Gas Service"},
-            {"type": "expense", "date": "2026-06-12", "amount": 124.07, "payee": "Appalachian Power (Church)", "check_number": "4045", "category": "Utilities", "memo": "Electric Service (Church)"},
-            {"type": "expense", "date": "2026-06-15", "amount": 300.00, "payee": "CEF of Greater Huntington", "check_number": "4041", "category": "Donations / Missions", "memo": "Donation"},
-            {"type": "expense", "date": "2026-06-20", "amount": 125.00, "payee": "Jodi Sovine Mowing", "check_number": "4044", "category": "Maintenance", "memo": "Mowing"},
-            {"type": "income", "date": "2026-06-07", "amount": 1420.10, "category": "Deposit", "memo": "Sunday offering"},
-            {"type": "income", "date": "2026-06-14", "amount": 1410.00, "category": "Deposit", "memo": "Sunday offering"},
-            {"type": "income", "date": "2026-06-21", "amount": 1091.00, "category": "Deposit", "memo": "Sunday offering"},
-            {"type": "income", "date": "2026-06-30", "amount": 34.64, "category": "Interest Paid", "memo": "Monthly interest"},
-        ]
-        docs = []
-        for s in samples:
-            docs.append({
-                "id": new_id(), "type": s["type"], "date": s["date"], "account_id": acc_checking,
-                "to_account_id": None, "amount": s["amount"],
-                "payee_id": payee_by_name.get(s.get("payee")), "check_number": s.get("check_number", ""),
-                "category_id": cat_by_name.get(s.get("category")), "fund_id": general_fund,
-                "memo": s.get("memo", ""), "created_at": now_iso(), "created_by": "seed",
-            })
-        await db.transactions.insert_many(docs)
-        logger.info("Seeded accounts, funds, categories, payees, COA, sample transactions")
-
+    # Church settings (blank, editable by the treasurer)
     if not await db.settings.find_one({"id": "church"}):
-        await db.settings.insert_one({
-            "id": "church", "church_name": os.environ.get("CHURCH_NAME", "Providence Baptist Church"),
-            "treasurer_name": "", "meeting_day": "",
-        })
+        await db.settings.insert_one({"id": "church", "church_name": "Your Church Name", "treasurer_name": "", "meeting_day": ""})
 
 
 @app.on_event("startup")
 async def startup():
-    await seed()
+    await ensure_indexes()
     try:
         init_storage()
         logger.info("Storage initialized")
