@@ -50,10 +50,10 @@ class TestImport:
         # Build CSV with 2 valid rows (auto-creating payee/category/fund) + 3 bad rows
         csv_text = (
             "Date,Type,Account,To Account,Amount,Check#,Payee,Category,Fund,Memo\n"
-            "2026-07-01,income,*3217,,123.45,,TEST_IMP_Payee,TEST_IMP_Cat_Inc,TEST_IMP_Fund,TEST_IMP_INCOME\n"
-            "2026-07-02,expense,*3217,,50.00,5001,TEST_IMP_Payee,TEST_IMP_Cat_Exp,TEST_IMP_Fund,TEST_IMP_EXP\n"
-            "not-a-date,expense,*3217,,10,,,,General Fund,bad date\n"
-            "2026-07-03,bogus,*3217,,10,,,,General Fund,bad type\n"
+            "2026-07-01,income,*1234,,123.45,,TEST_IMP_Payee,TEST_IMP_Cat_Inc,TEST_IMP_Fund,TEST_IMP_INCOME\n"
+            "2026-07-02,expense,*1234,,50.00,5001,TEST_IMP_Payee,TEST_IMP_Cat_Exp,TEST_IMP_Fund,TEST_IMP_EXP\n"
+            "not-a-date,expense,*1234,,10,,,,General Fund,bad date\n"
+            "2026-07-03,bogus,*1234,,10,,,,General Fund,bad type\n"
             "2026-07-04,expense,*9999,,10,,,,General Fund,bad account\n"
         )
         files = {"file": ("import.csv", csv_text.encode("utf-8"), "text/csv")}
@@ -94,7 +94,7 @@ class TestImport:
     def test_import_transfer_requires_destination(self, auth):
         csv_text = (
             "Date,Type,Account,To Account,Amount,Check#,Payee,Category,Fund,Memo\n"
-            "2026-07-05,transfer,*3217,,100,,,,,missing dest\n"
+            "2026-07-05,transfer,*1234,,100,,,,,missing dest\n"
         )
         files = {"file": ("t.csv", csv_text.encode("utf-8"), "text/csv")}
         r = requests.post(f"{API}/import/transactions", headers=auth, files=files)
@@ -108,7 +108,7 @@ class TestImport:
 class TestReconcile:
     def test_cleared_toggle_and_reconcile_math(self, auth):
         accts = requests.get(f"{API}/accounts", headers=auth).json()
-        acc = next(a for a in accts if a["mask"] == "*3217")
+        acc = next(a for a in accts if a["mask"] == "*1234")
         # Create a fresh expense
         cats = requests.get(f"{API}/categories", headers=auth).json()
         exp_cat = next(c for c in cats if c["type"] == "expense")

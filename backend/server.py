@@ -706,9 +706,9 @@ async def import_template(user: dict = Depends(require_txn_manage)):
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(IMPORT_COLUMNS)
-    writer.writerow(["2026-06-07", "income", "*3217", "", "1420.10", "", "", "Deposit", "General Fund", "Sunday offering"])
-    writer.writerow(["2026-06-03", "expense", "*3217", "", "144.76", "4035", "Frontier Communications", "Utilities", "General Fund", "Internet/Phone Service"])
-    writer.writerow(["2026-06-15", "transfer", "*3217", "*6715", "500.00", "", "", "", "", "Move to savings"])
+    writer.writerow(["2026-06-07", "income", "*1234", "", "1420.10", "", "", "Deposit", "General Fund", "Sunday offering"])
+    writer.writerow(["2026-06-03", "expense", "*1234", "", "144.76", "4035", "Frontier Communications", "Utilities", "General Fund", "Internet/Phone Service"])
+    writer.writerow(["2026-06-15", "transfer", "*1234", "*5678", "500.00", "", "", "", "", "Move to savings"])
     out.seek(0)
     return Response(
         content=out.getvalue(),

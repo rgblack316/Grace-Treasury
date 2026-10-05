@@ -175,7 +175,7 @@ function AccountsTab() {
       )}
       fields={[
         { key: "name", label: "Account Name", placeholder: "General Operating Checking" },
-        { key: "mask", label: "Masked Number", placeholder: "*3217" },
+        { key: "mask", label: "Masked Number", placeholder: "*1234" },
         { key: "opening_balance", label: "Opening Balance", type: "number", placeholder: "0.00" },
         { key: "opening_date", label: "Opening Date", type: "date" },
       ]}

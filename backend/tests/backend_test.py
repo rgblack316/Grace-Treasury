@@ -67,7 +67,7 @@ class TestLookups:
         assert r.status_code == 200
         accts = r.json()
         masks = {a["mask"] for a in accts}
-        assert {"*3217", "*6715", "*1180"}.issubset(masks)
+        assert {"*1234", "*5678", "*9012"}.issubset(masks)
 
     def test_funds(self, client):
         r = client.get(f"{API}/funds")
@@ -88,9 +88,9 @@ class TestLookups:
 class TestReport:
     def test_june_2026_report(self, client):
         accts = client.get(f"{API}/accounts").json()
-        acc_3217 = next(a for a in accts if a["mask"] == "*3217")
+        acc_main = next(a for a in accts if a["mask"] == "*1234")
         r = client.get(f"{API}/reports/treasurer",
-                       params={"start": "2026-06-01", "end": "2026-06-30", "account_ids": acc_3217["id"]})
+                       params={"start": "2026-06-01", "end": "2026-06-30", "account_ids": acc_main["id"]})
         assert r.status_code == 200
         rpt = r.json()
         a = rpt["accounts"][0]
@@ -106,10 +106,10 @@ class TestReport:
 
     def test_report_pdf(self, client):
         accts = client.get(f"{API}/accounts").json()
-        acc_3217 = next(a for a in accts if a["mask"] == "*3217")
+        acc_main = next(a for a in accts if a["mask"] == "*1234")
         r = client.get(f"{API}/reports/treasurer/pdf",
                        params={"start": "2026-06-01", "end": "2026-06-30",
-                               "account_ids": acc_3217["id"],
+                               "account_ids": acc_main["id"],
                                "include_category": "true", "include_funds": "true"})
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("application/pdf")
@@ -120,7 +120,7 @@ class TestReport:
 class TestTransactions:
     def test_crud_income(self, client):
         accts = client.get(f"{API}/accounts").json()
-        acc = next(a for a in accts if a["mask"] == "*6715")
+        acc = next(a for a in accts if a["mask"] == "*5678")
         funds = client.get(f"{API}/funds").json()
         cats = client.get(f"{API}/categories").json()
         inc_cat = next(c for c in cats if c["type"] == "income")
@@ -158,7 +158,7 @@ class TestTransactions:
 
     def test_expense_with_check_payee(self, client):
         accts = client.get(f"{API}/accounts").json()
-        acc = next(a for a in accts if a["mask"] == "*3217")
+        acc = next(a for a in accts if a["mask"] == "*1234")
         payees = client.get(f"{API}/payees").json()
         cats = client.get(f"{API}/categories").json()
         exp_cat = next(c for c in cats if c["type"] == "expense")
@@ -173,8 +173,8 @@ class TestTransactions:
 
     def test_transfer_adjusts_balances(self, client):
         accts = client.get(f"{API}/accounts").json()
-        src = next(a for a in accts if a["mask"] == "*6715")
-        dst = next(a for a in accts if a["mask"] == "*1180")
+        src = next(a for a in accts if a["mask"] == "*5678")
+        dst = next(a for a in accts if a["mask"] == "*9012")
 
         d0 = client.get(f"{API}/dashboard").json()
         src_bal0 = next(x["balance"] for x in d0["accounts"] if x["id"] == src["id"])
@@ -203,7 +203,7 @@ class TestTransactions:
 
     def test_filters(self, client):
         accts = client.get(f"{API}/accounts").json()
-        acc = next(a for a in accts if a["mask"] == "*3217")
+        acc = next(a for a in accts if a["mask"] == "*1234")
         r = client.get(f"{API}/transactions", params={
             "account_id": acc["id"], "type": "expense",
             "start": "2026-06-01", "end": "2026-06-30"})
