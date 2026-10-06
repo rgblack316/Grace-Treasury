@@ -17,9 +17,18 @@ installs it starts with a clean, empty database and creates its own administrato
 - **Multiple bank accounts** — add, rename, set opening balances, and deactivate accounts. Account
   numbers are shown masked (e.g. `*1234`).
 - **Funds** — track money by purpose (General, Building, Missions, …) independent of which account holds it.
+  Each fund can have an **opening balance** (so you can start from what you already hold), and funds can be
+  **nested** inside one another — a parent fund's total rolls up its own balance plus its children's, while
+  each child is still tracked on its own.
+- **Fund Activity** — move money between funds or adjust a single fund directly (for corrections or
+  designations) from the dedicated **Funds** page, without touching any bank-account balance. Every entry is
+  dated, can carry a memo, and appears in a clear history.
+- **Split across funds** — when recording income or an expense you can divide the amount among several funds
+  (e.g. a $1,000 offering: $600 General, $400 Building), with a helper showing the remaining unallocated amount.
+  A single fund stays the quick default; splitting is optional.
 - **Income / Expense / Transfer** — record expenses with Check #, Payee, Memo/Reason; record income
   and transfers between accounts. Everything is searchable and filterable.
-- **Dashboard** — current balance per account and per fund, plus recent activity.
+- **Dashboard** — current balance per account and per fund (with roll-ups for nested funds), plus recent activity.
 - **Monthly Treasurer's Report** — pick any custom date range (or a preset), choose which accounts
   to include, and view/print it or download a letter-size PDF. Shows Balance Forward, itemized
   Expenses and Income, totals, and New Balance, with optional category-summary and fund-balance sections.
@@ -29,6 +38,8 @@ installs it starts with a clean, empty database and creates its own administrato
   stored **inside MongoDB (GridFS)**, so everything stays on your server — no cloud, no API keys.
 - **Spreadsheet import** — bulk-import past months from a CSV template; new payees, categories, and
   funds are auto-created.
+- **Branded browser title** — the browser tab shows your church's name with the app, e.g.
+  *"Providence Baptist Church - Grace Treasury"*, pulled live from **Settings → Church Info**.
 - **Users & roles** — the treasurer can add additional logins and create custom roles that limit what
   each person can do (view only, record transactions, manage settings, manage users, manage backups).
 - **Backup & restore** — export the whole database to a JSON file (and restore it) from the Settings
