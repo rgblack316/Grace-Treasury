@@ -28,7 +28,11 @@ export default function Layout() {
   const [churchName, setChurchName] = useState("Church Treasury");
 
   useEffect(() => {
-    api.get("/settings/church").then((r) => r.data?.church_name && setChurchName(r.data.church_name)).catch(() => {});
+    api.get("/settings/church").then((r) => {
+      const name = r.data?.church_name;
+      if (name) setChurchName(name);
+      document.title = name ? `${name} - Grace Treasury` : "Grace Treasury";
+    }).catch(() => {});
   }, []);
 
   const settingsAny = can("settings.manage") || can("users.manage") || can("data.manage");
