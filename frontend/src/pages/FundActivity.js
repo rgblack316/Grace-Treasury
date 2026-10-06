@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "@/lib/api";
-import { money, fmtDate, todayISO } from "@/lib/format";
+import { money, fmtDate, todayISO, fundIndent } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
@@ -66,15 +66,16 @@ export default function FundActivity() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {funds.length === 0 && <Card className="p-5 text-sm text-muted-foreground">No funds yet. Add one in Settings → Funds.</Card>}
           {funds.map((f) => (
-            <Card key={f.id} className="p-5 border-[#E5E0D8]" data-testid={`fund-balance-card-${f.id}`}>
+            <Card key={f.id} className="p-5 border-[#E5E0D8]" data-testid={`fund-balance-card-${f.id}`} style={{ marginLeft: (f.depth || 0) * 16 }}>
               <div className="flex items-center justify-between">
                 <div className="h-10 w-10 rounded-lg bg-[#FEF3C7] grid place-items-center">
                   <PiggyBank className="h-5 w-5 text-[#B45309]" />
                 </div>
                 {f.opening_balance ? <Badge variant="secondary" className="font-mono text-xs">Opening {money(f.opening_balance)}</Badge> : null}
               </div>
-              <div className="mt-4 text-sm text-muted-foreground">{f.name}</div>
-              <div className="font-mono text-2xl font-bold text-slate-900 mt-1" data-testid={`fund-balance-${f.id}`}>{money(f.balance)}</div>
+              <div className="mt-4 text-sm text-muted-foreground">{f.depth ? "↳ " : ""}{f.name}</div>
+              <div className="font-mono text-2xl font-bold text-slate-900 mt-1" data-testid={`fund-balance-${f.id}`}>{money(f.has_children ? f.rolled_balance : f.balance)}</div>
+              {f.has_children ? <div className="text-xs text-muted-foreground mt-0.5">Own {money(f.balance)} · includes nested</div> : null}
             </Card>
           ))}
         </div>
@@ -205,14 +206,14 @@ function FundActivityDialog({ open, onOpenChange, funds, onSaved }) {
                 <Label>From Fund</Label>
                 <Select value={form.from_fund_id || ""} onValueChange={(v) => set("from_fund_id", v)}>
                   <SelectTrigger data-testid="fa-from-fund"><SelectValue placeholder="Source fund" /></SelectTrigger>
-                  <SelectContent>{funds.map((f) => <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>)}</SelectContent>
+                  <SelectContent>{funds.map((f) => <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
                 <Label>To Fund</Label>
                 <Select value={form.to_fund_id || ""} onValueChange={(v) => set("to_fund_id", v)}>
                   <SelectTrigger data-testid="fa-to-fund"><SelectValue placeholder="Destination fund" /></SelectTrigger>
-                  <SelectContent>{funds.map((f) => <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>)}</SelectContent>
+                  <SelectContent>{funds.map((f) => <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
             </div>
@@ -222,7 +223,7 @@ function FundActivityDialog({ open, onOpenChange, funds, onSaved }) {
                 <Label>Fund</Label>
                 <Select value={form.fund_id || ""} onValueChange={(v) => set("fund_id", v)}>
                   <SelectTrigger data-testid="fa-fund"><SelectValue placeholder="Choose fund" /></SelectTrigger>
-                  <SelectContent>{funds.map((f) => <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>)}</SelectContent>
+                  <SelectContent>{funds.map((f) => <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">

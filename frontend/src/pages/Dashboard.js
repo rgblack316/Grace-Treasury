@@ -64,14 +64,17 @@ export default function Dashboard() {
           <Card className="divide-y divide-[#EEEDE7]">
             {data.funds.length === 0 && <div className="p-5 text-sm text-muted-foreground">No funds yet.</div>}
             {data.funds.map((f) => (
-              <div key={f.id} className="flex items-center justify-between p-4" data-testid={`fund-row-${f.name}`}>
-                <div className="flex items-center gap-3">
-                  <div className="h-9 w-9 rounded-lg bg-[#FEF3C7] grid place-items-center">
+              <div key={f.id} className="flex items-center justify-between p-4" data-testid={`fund-row-${f.name}`} style={{ paddingLeft: 16 + (f.depth || 0) * 20 }}>
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="h-9 w-9 rounded-lg bg-[#FEF3C7] grid place-items-center shrink-0">
                     <PiggyBank className="h-4 w-4 text-[#B45309]" />
                   </div>
-                  <span className="text-sm font-medium text-slate-800">{f.name}</span>
+                  <div className="min-w-0">
+                    <span className="text-sm font-medium text-slate-800">{f.depth ? "↳ " : ""}{f.name}</span>
+                    {f.has_children ? <div className="text-xs text-muted-foreground">Own {money(f.balance)} · includes nested</div> : null}
+                  </div>
                 </div>
-                <span className="font-mono font-semibold text-slate-900">{money(f.balance)}</span>
+                <span className="font-mono font-semibold text-slate-900">{money(f.has_children ? f.rolled_balance : f.balance)}</span>
               </div>
             ))}
           </Card>
