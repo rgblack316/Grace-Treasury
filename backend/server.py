@@ -210,6 +210,7 @@ class FundInput(BaseModel):
     description: str = ""
     opening_balance: float = 0.0
     opening_date: str = ""
+    parent_id: Optional[str] = None
     active: bool = True
 
 
@@ -507,9 +508,65 @@ def register_crud(path: str, collection: str, model):
 
 
 register_crud("accounts", "accounts", AccountInput)
-register_crud("funds", "funds", FundInput)
 register_crud("categories", "categories", CategoryInput)
 register_crud("payees", "payees", PayeeInput)
+
+
+# ----------------------------- Funds (custom: supports nesting) -----------------------------
+async def validate_fund_parent(parent_id: Optional[str], fund_id: Optional[str]):
+    if not parent_id:
+        return
+    if parent_id == fund_id:
+        raise HTTPException(status_code=400, detail="A fund cannot be its own parent")
+    cur = parent_id
+    seen = set()
+    while cur:
+        if cur == fund_id:
+            raise HTTPException(status_code=400, detail="That would create a loop between funds")
+        if cur in seen:
+            break
+        seen.add(cur)
+        p = await db.funds.find_one({"id": cur}, {"_id": 0, "parent_id": 1})
+        if not p:
+            if cur == parent_id:
+                raise HTTPException(status_code=400, detail="Parent fund not found")
+            break
+        cur = p.get("parent_id")
+
+
+@api_router.get("/funds")
+async def list_funds(user: dict = Depends(get_current_user)):
+    return await db.funds.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
+
+
+@api_router.post("/funds")
+async def create_fund(data: FundInput, user: dict = Depends(require_settings)):
+    await validate_fund_parent(data.parent_id, None)
+    doc = data.model_dump()
+    doc["id"] = new_id()
+    doc["created_at"] = now_iso()
+    await db.funds.insert_one(doc)
+    return clean(doc)
+
+
+@api_router.put("/funds/{fund_id}")
+async def update_fund(fund_id: str, data: FundInput, user: dict = Depends(require_settings)):
+    existing = await db.funds.find_one({"id": fund_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Fund not found")
+    await validate_fund_parent(data.parent_id, fund_id)
+    await db.funds.update_one({"id": fund_id}, {"$set": data.model_dump()})
+    return await db.funds.find_one({"id": fund_id}, {"_id": 0})
+
+
+@api_router.delete("/funds/{fund_id}")
+async def delete_fund(fund_id: str, user: dict = Depends(require_settings)):
+    f = await db.funds.find_one({"id": fund_id}, {"_id": 0})
+    if f:
+        # keep any children in the tree by re-parenting them to this fund's parent
+        await db.funds.update_many({"parent_id": fund_id}, {"$set": {"parent_id": f.get("parent_id")}})
+    await db.funds.delete_one({"id": fund_id})
+    return {"ok": True}
 
 
 # ----------------------------- Transactions -----------------------------
@@ -870,14 +927,12 @@ async def compute_fund_balances(up_to: Optional[str] = None):
     up_to is an inclusive end date (YYYY-MM-DD) or None for all-time."""
     funds = await db.funds.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
     fmap = {}
-    order = []
     for f in funds:
         ob = float(f.get("opening_balance", 0.0) or 0.0)
         od = f.get("opening_date") or ""
         if up_to is not None and od and od > up_to:
             ob = 0.0
         fmap[f["id"]] = {**f, "balance": ob}
-        order.append(f["id"])
 
     txn_q = {"type": {"$in": ["income", "expense"]}}
     if up_to is not None:
@@ -911,7 +966,49 @@ async def compute_fund_balances(up_to: Optional[str] = None):
 
     for fid in fmap:
         fmap[fid]["balance"] = round(fmap[fid]["balance"], 2)
-    return [fmap[fid] for fid in order]
+
+    # Roll up child balances into parents (supports multi-level nesting).
+    by_id = fmap
+    children: dict = {}
+    for fid, f in fmap.items():
+        pid = f.get("parent_id")
+        if pid not in fmap:
+            pid = None
+        children.setdefault(pid, []).append(fid)
+
+    rolled: dict = {}
+
+    def roll(fid, stack):
+        if fid in rolled:
+            return rolled[fid]
+        total = fmap[fid]["balance"]
+        for c in children.get(fid, []):
+            if c in stack:
+                continue
+            total += roll(c, stack | {fid})
+        rolled[fid] = round(total, 2)
+        return rolled[fid]
+
+    for fid in fmap:
+        roll(fid, set())
+
+    ordered = []
+
+    def emit(fid, depth):
+        f = fmap[fid]
+        ordered.append({
+            **f,
+            "balance": f["balance"],
+            "rolled_balance": rolled[fid],
+            "depth": depth,
+            "has_children": bool(children.get(fid)),
+        })
+        for c in sorted(children.get(fid, []), key=lambda i: by_id[i].get("name", "").lower()):
+            emit(c, depth + 1)
+
+    for rid in sorted(children.get(None, []), key=lambda i: by_id[i].get("name", "").lower()):
+        emit(rid, 0)
+    return ordered
 
 
 @api_router.get("/fund-activity")
@@ -1064,9 +1161,9 @@ async def build_report(start: str, end: str, account_ids: List[str]):
         for k, v in sorted(cat_summary.items(), key=lambda x: (x[0][1], x[0][0]))
     ]
 
-    # fund balances as of end (opening + income/expense splits + fund activity)
+    # fund balances as of end (opening + income/expense splits + fund activity; parents roll up children)
     fb = await compute_fund_balances(end)
-    fund_balances = [{"name": v["name"], "balance": v["balance"]} for v in fb]
+    fund_balances = [{"name": v["name"], "balance": v["rolled_balance"], "own_balance": v["balance"], "depth": v["depth"], "has_children": v["has_children"]} for v in fb]
 
     church = await db.settings.find_one({"id": "church"}, {"_id": 0}) or {"church_name": os.environ.get("CHURCH_NAME", "Church"), "treasurer_name": ""}
 
@@ -1204,7 +1301,7 @@ async def treasurer_report_pdf(
         elems.append(Paragraph("Fund Balances", h_acc))
         f_data = [["Fund", "Balance"]]
         for f in report["fund_balances"]:
-            f_data.append([f["name"], money(f["balance"])])
+            f_data.append([("    " * f.get("depth", 0)) + f["name"], money(f["balance"])])
         tf = Table(f_data, colWidths=[5.0 * inch, 2.0 * inch])
         tf.setStyle(_table_style(navy, len(f_data), total_row=False))
         elems.append(tf)

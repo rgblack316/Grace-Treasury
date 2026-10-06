@@ -184,17 +184,20 @@ function AccountsTab() {
 
 function FundsTab() {
   const { items } = useCrud("funds");
+  const parentName = Object.fromEntries(items.map((f) => [f.id, f.name]));
+  const parentOptions = [{ value: "none", label: "None (top level)" }, ...items.map((f) => ({ value: f.id, label: f.name }))];
   return (
-    <ManagerCard title="Church Funds" description="Track money by purpose, independent of which account holds it. Set a starting balance for funds you already have."
+    <ManagerCard title="Church Funds" description="Track money by purpose, independent of which account holds it. Set a starting balance, and optionally nest a fund inside another."
       items={items} path="funds" label="Fund"
-      columns={(f) => <div><div className="font-medium text-slate-800">{f.name}</div><div className="text-xs text-muted-foreground">{f.description || "—"}{(f.opening_balance ? ` · Opening ${money(f.opening_balance)}${f.opening_date ? ` as of ${f.opening_date}` : ""}` : "")}</div></div>}
+      columns={(f) => <div><div className="font-medium text-slate-800">{f.name}{f.parent_id && parentName[f.parent_id] ? <span className="text-xs font-normal text-muted-foreground"> · under {parentName[f.parent_id]}</span> : null}</div><div className="text-xs text-muted-foreground">{f.description || "—"}{(f.opening_balance ? ` · Opening ${money(f.opening_balance)}${f.opening_date ? ` as of ${f.opening_date}` : ""}` : "")}</div></div>}
       fields={[
         { key: "name", label: "Fund Name", placeholder: "Building Fund" },
         { key: "description", label: "Description", placeholder: "Optional" },
+        { key: "parent_id", label: "Nested under (optional)", type: "select", placeholder: "Top level fund", options: parentOptions },
         { key: "opening_balance", label: "Opening Balance", type: "number", placeholder: "0.00" },
         { key: "opening_date", label: "Opening Date", type: "date" },
       ]}
-      buildPayload={(f) => ({ name: f.name, description: f.description || "", opening_balance: Number(f.opening_balance || 0), opening_date: f.opening_date || "", active: true })}
+      buildPayload={(f) => ({ name: f.name, description: f.description || "", parent_id: f.parent_id && f.parent_id !== "none" ? f.parent_id : null, opening_balance: Number(f.opening_balance || 0), opening_date: f.opening_date || "", active: true })}
     />
   );
 }

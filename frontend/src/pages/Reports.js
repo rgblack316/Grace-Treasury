@@ -283,7 +283,7 @@ function ReportView({ report, includeCategory, includeFunds }) {
             <tbody>
               {report.fund_balances.map((f, i) => (
                 <tr key={i} className="border-b border-[#F4F0E8]">
-                  <td className="py-1.5">{f.name}</td>
+                  <td className="py-1.5" style={{ paddingLeft: (f.depth || 0) * 20 }}>{f.depth ? "↳ " : ""}{f.name}</td>
                   <td className="py-1.5 text-right font-mono">{money(f.balance)}</td>
                 </tr>
               ))}

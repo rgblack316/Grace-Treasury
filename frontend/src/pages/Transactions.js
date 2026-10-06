@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "@/lib/api";
-import { money, fmtDate } from "@/lib/format";
+import { money, fmtDate, orderFunds, fundIndent } from "@/lib/format";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
@@ -202,7 +202,7 @@ export default function Transactions() {
             <SelectTrigger data-testid="filter-fund"><SelectValue placeholder="All funds" /></SelectTrigger>
             <SelectContent>
               <SelectItem value={ALL}>All funds</SelectItem>
-              {lists.funds.map((f) => <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>)}
+              {orderFunds(lists.funds).map((f) => <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={filters.category_id || ALL} onValueChange={(v) => setF("category_id", v)}>

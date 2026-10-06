@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "@/lib/api";
-import { todayISO, money } from "@/lib/format";
+import { todayISO, money, orderFunds, fundIndent } from "@/lib/format";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -320,8 +320,8 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
                     <SelectTrigger data-testid="select-fund"><SelectValue placeholder="Choose fund" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value={NONE}>None</SelectItem>
-                      {lists.funds.map((f) => (
-                        <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                      {orderFunds(lists.funds).map((f) => (
+                        <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -337,8 +337,8 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
                       <Select value={s.fund_id || ""} onValueChange={(v) => setSplit(i, "fund_id", v)}>
                         <SelectTrigger className="flex-1" data-testid={`split-fund-${i}`}><SelectValue placeholder="Choose fund" /></SelectTrigger>
                         <SelectContent>
-                          {lists.funds.map((f) => (
-                            <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                          {orderFunds(lists.funds).map((f) => (
+                            <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
