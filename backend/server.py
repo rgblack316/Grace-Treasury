@@ -72,7 +72,7 @@ PERMISSION_LABELS = {
     "transactions.view": "View transactions, dashboard and balances",
     "transactions.manage": "Add, edit, delete, import transactions and reconcile",
     "reports.view": "View, print and export reports",
-    "settings.manage": "Manage accounts, funds, categories, payees and chart of accounts",
+    "settings.manage": "Manage accounts, funds, categories and payees",
     "users.manage": "Manage users and roles",
     "data.manage": "Back up and restore the database",
 }
@@ -208,6 +208,8 @@ class AccountInput(BaseModel):
 class FundInput(BaseModel):
     name: str
     description: str = ""
+    opening_balance: float = 0.0
+    opening_date: str = ""
     active: bool = True
 
 
@@ -222,11 +224,9 @@ class PayeeInput(BaseModel):
     active: bool = True
 
 
-class CoaInput(BaseModel):
-    code: str = ""
-    name: str
-    group: str  # Asset | Liability | Equity | Income | Expense
-    active: bool = True
+class FundSplit(BaseModel):
+    fund_id: str
+    amount: float
 
 
 class TransactionInput(BaseModel):
@@ -239,8 +239,19 @@ class TransactionInput(BaseModel):
     check_number: Optional[str] = ""
     category_id: Optional[str] = None
     fund_id: Optional[str] = None
+    fund_splits: Optional[List[FundSplit]] = None
     memo: Optional[str] = ""
     cleared: bool = False
+
+
+class FundActivityInput(BaseModel):
+    type: str  # move | adjust
+    date: str  # YYYY-MM-DD
+    amount: float
+    from_fund_id: Optional[str] = None
+    to_fund_id: Optional[str] = None
+    fund_id: Optional[str] = None
+    memo: Optional[str] = ""
 
 
 class ChurchSettings(BaseModel):
@@ -499,7 +510,6 @@ register_crud("accounts", "accounts", AccountInput)
 register_crud("funds", "funds", FundInput)
 register_crud("categories", "categories", CategoryInput)
 register_crud("payees", "payees", PayeeInput)
-register_crud("coa", "coa", CoaInput)
 
 
 # ----------------------------- Transactions -----------------------------
@@ -554,10 +564,23 @@ async def list_transactions(
     return items
 
 
+def validate_fund_allocation(data: TransactionInput):
+    """When a transaction splits across funds, the parts must add up to the total."""
+    if data.type == "transfer" or not data.fund_splits:
+        return
+    for s in data.fund_splits:
+        if s.amount <= 0:
+            raise HTTPException(status_code=400, detail="Each fund split must be greater than zero")
+    total = round(sum(s.amount for s in data.fund_splits), 2)
+    if abs(total - round(data.amount, 2)) > 0.01:
+        raise HTTPException(status_code=400, detail="Fund splits must add up to the transaction amount")
+
+
 @api_router.post("/transactions")
 async def create_transaction(data: TransactionInput, user: dict = Depends(require_txn_manage)):
     if data.type == "transfer" and not data.to_account_id:
         raise HTTPException(status_code=400, detail="Transfer requires a destination account")
+    validate_fund_allocation(data)
     doc = data.model_dump()
     doc["id"] = new_id()
     doc["created_at"] = now_iso()
@@ -571,6 +594,7 @@ async def update_transaction(txn_id: str, data: TransactionInput, user: dict = D
     existing = await db.transactions.find_one({"id": txn_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    validate_fund_allocation(data)
     await db.transactions.update_one({"id": txn_id}, {"$set": data.model_dump()})
     updated = await db.transactions.find_one({"id": txn_id}, {"_id": 0})
     return updated
@@ -840,6 +864,97 @@ async def import_transactions(file: UploadFile = File(...), user: dict = Depends
     }
 
 
+# ----------------------------- Fund balances & activity -----------------------------
+async def compute_fund_balances(up_to: Optional[str] = None):
+    """Fund balances = opening balance + income/expense (incl. splits) + fund moves/adjustments.
+    up_to is an inclusive end date (YYYY-MM-DD) or None for all-time."""
+    funds = await db.funds.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
+    fmap = {}
+    order = []
+    for f in funds:
+        ob = float(f.get("opening_balance", 0.0) or 0.0)
+        od = f.get("opening_date") or ""
+        if up_to is not None and od and od > up_to:
+            ob = 0.0
+        fmap[f["id"]] = {**f, "balance": ob}
+        order.append(f["id"])
+
+    txn_q = {"type": {"$in": ["income", "expense"]}}
+    if up_to is not None:
+        txn_q["date"] = {"$lte": up_to}
+    async for t in db.transactions.find(txn_q, {"_id": 0}):
+        sign = 1.0 if t["type"] == "income" else -1.0
+        splits = t.get("fund_splits")
+        if splits:
+            for s in splits:
+                fid = s.get("fund_id")
+                if fid in fmap:
+                    fmap[fid]["balance"] += sign * float(s.get("amount", 0) or 0)
+        else:
+            fid = t.get("fund_id")
+            if fid in fmap:
+                fmap[fid]["balance"] += sign * float(t["amount"])
+
+    act_q = {}
+    if up_to is not None:
+        act_q["date"] = {"$lte": up_to}
+    async for a in db.fund_activity.find(act_q, {"_id": 0}):
+        amt = float(a.get("amount", 0) or 0)
+        if a.get("type") == "move":
+            if a.get("from_fund_id") in fmap:
+                fmap[a["from_fund_id"]]["balance"] -= amt
+            if a.get("to_fund_id") in fmap:
+                fmap[a["to_fund_id"]]["balance"] += amt
+        elif a.get("type") == "adjust":
+            if a.get("fund_id") in fmap:
+                fmap[a["fund_id"]]["balance"] += amt
+
+    for fid in fmap:
+        fmap[fid]["balance"] = round(fmap[fid]["balance"], 2)
+    return [fmap[fid] for fid in order]
+
+
+@api_router.get("/fund-activity")
+async def list_fund_activity(user: dict = Depends(require_txn_view)):
+    funds = {f["id"]: f["name"] for f in await db.funds.find({}, {"_id": 0}).to_list(1000)}
+    items = await db.fund_activity.find({}, {"_id": 0}).sort("date", -1).to_list(5000)
+    for a in items:
+        a["from_fund_name"] = funds.get(a.get("from_fund_id"), "")
+        a["to_fund_name"] = funds.get(a.get("to_fund_id"), "")
+        a["fund_name"] = funds.get(a.get("fund_id"), "")
+    return items
+
+
+@api_router.post("/fund-activity")
+async def create_fund_activity(data: FundActivityInput, user: dict = Depends(require_txn_manage)):
+    if data.type not in ("move", "adjust"):
+        raise HTTPException(status_code=400, detail="Invalid fund activity type")
+    if data.type == "move":
+        if not data.from_fund_id or not data.to_fund_id:
+            raise HTTPException(status_code=400, detail="Choose both a source and a destination fund")
+        if data.from_fund_id == data.to_fund_id:
+            raise HTTPException(status_code=400, detail="Source and destination funds must differ")
+        if data.amount <= 0:
+            raise HTTPException(status_code=400, detail="Enter an amount greater than zero")
+    else:  # adjust
+        if not data.fund_id:
+            raise HTTPException(status_code=400, detail="Choose a fund to adjust")
+        if data.amount == 0:
+            raise HTTPException(status_code=400, detail="Enter a non-zero amount")
+    doc = data.model_dump()
+    doc["id"] = new_id()
+    doc["created_at"] = now_iso()
+    doc["created_by"] = user["id"]
+    await db.fund_activity.insert_one(doc)
+    return clean(doc)
+
+
+@api_router.delete("/fund-activity/{activity_id}")
+async def delete_fund_activity(activity_id: str, user: dict = Depends(require_txn_manage)):
+    await db.fund_activity.delete_one({"id": activity_id})
+    return {"ok": True}
+
+
 # ----------------------------- Dashboard -----------------------------
 @api_router.get("/dashboard")
 async def dashboard(user: dict = Depends(require_txn_view)):
@@ -851,17 +966,8 @@ async def dashboard(user: dict = Depends(require_txn_view)):
         total += bal
         account_balances.append({**acc, "balance": bal})
 
-    # fund balances
-    funds = await db.funds.find({}, {"_id": 0}).to_list(1000)
-    fund_map = {f["id"]: {**f, "balance": 0.0} for f in funds}
-    async for txn in db.transactions.find({"fund_id": {"$ne": None}}, {"_id": 0}):
-        fid = txn.get("fund_id")
-        if fid in fund_map:
-            if txn["type"] == "income":
-                fund_map[fid]["balance"] += float(txn["amount"])
-            elif txn["type"] == "expense":
-                fund_map[fid]["balance"] -= float(txn["amount"])
-    fund_balances = [ {**v, "balance": round(v["balance"], 2)} for v in fund_map.values() ]
+    # fund balances (opening + income/expense splits + fund activity)
+    fund_balances = await compute_fund_balances()
 
     # recent transactions (enriched)
     recent = await db.transactions.find({}, {"_id": 0}).sort("date", -1).limit(8).to_list(8)
@@ -958,17 +1064,9 @@ async def build_report(start: str, end: str, account_ids: List[str]):
         for k, v in sorted(cat_summary.items(), key=lambda x: (x[0][1], x[0][0]))
     ]
 
-    # fund balances as of end
-    funds = await db.funds.find({}, {"_id": 0}).to_list(1000)
-    fund_map = {f["id"]: {"name": f["name"], "balance": 0.0} for f in funds}
-    async for t in db.transactions.find({"fund_id": {"$ne": None}, "date": {"$lte": end}}, {"_id": 0}):
-        fid = t.get("fund_id")
-        if fid in fund_map:
-            if t["type"] == "income":
-                fund_map[fid]["balance"] += float(t["amount"])
-            elif t["type"] == "expense":
-                fund_map[fid]["balance"] -= float(t["amount"])
-    fund_balances = [{"name": v["name"], "balance": round(v["balance"], 2)} for v in fund_map.values()]
+    # fund balances as of end (opening + income/expense splits + fund activity)
+    fb = await compute_fund_balances(end)
+    fund_balances = [{"name": v["name"], "balance": v["balance"]} for v in fb]
 
     church = await db.settings.find_one({"id": "church"}, {"_id": 0}) or {"church_name": os.environ.get("CHURCH_NAME", "Church"), "treasurer_name": ""}
 
@@ -1164,7 +1262,7 @@ async def update_church(data: ChurchSettings, user: dict = Depends(require_setti
 
 
 # ----------------------------- Data backup / restore -----------------------------
-EXPORT_COLLECTIONS = ["users", "roles", "accounts", "funds", "categories", "payees", "coa", "transactions", "files", "settings"]
+EXPORT_COLLECTIONS = ["users", "roles", "accounts", "funds", "categories", "payees", "transactions", "fund_activity", "files", "settings"]
 
 
 async def build_export_payload() -> dict:
@@ -1567,25 +1665,6 @@ async def seed_starter_data():
         cats = [{"id": new_id(), "name": n, "type": "income", "active": True, "created_at": now_iso()} for n in income_cats]
         cats += [{"id": new_id(), "name": n, "type": "expense", "active": True, "created_at": now_iso()} for n in expense_cats]
         await db.categories.insert_many(cats)
-
-    # Generic chart of accounts (no specific bank accounts)
-    if await db.coa.count_documents({}) == 0:
-        coa = [
-            {"code": "1000", "name": "Checking Account", "group": "Asset"},
-            {"code": "1010", "name": "Savings Account", "group": "Asset"},
-            {"code": "2000", "name": "Accounts Payable", "group": "Liability"},
-            {"code": "3000", "name": "General Fund Balance", "group": "Equity"},
-            {"code": "4000", "name": "Tithes & Offerings", "group": "Income"},
-            {"code": "4010", "name": "Deposit", "group": "Income"},
-            {"code": "4020", "name": "Interest Paid", "group": "Income"},
-            {"code": "5000", "name": "Utilities", "group": "Expense"},
-            {"code": "5010", "name": "Missions & Donations", "group": "Expense"},
-            {"code": "5020", "name": "Maintenance", "group": "Expense"},
-            {"code": "5030", "name": "Supplies", "group": "Expense"},
-            {"code": "5040", "name": "Salary", "group": "Expense"},
-            {"code": "5050", "name": "Insurance", "group": "Expense"},
-        ]
-        await db.coa.insert_many([{**c, "id": new_id(), "active": True, "created_at": now_iso()} for c in coa])
 
     # Church settings (blank, editable by the treasurer)
     if not await db.settings.find_one({"id": "church"}):

@@ -9,7 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
-import { Landmark, LayoutDashboard, ListOrdered, FileText, Settings as SettingsIcon, LogOut, Plus, User } from "lucide-react";
+import { Landmark, LayoutDashboard, ListOrdered, FileText, PiggyBank, Settings as SettingsIcon, LogOut, Plus, User } from "lucide-react";
 import { useEffect, useState } from "react";
 import api from "@/lib/api";
 import TransactionDialog from "@/components/TransactionDialog";
@@ -17,6 +17,7 @@ import TransactionDialog from "@/components/TransactionDialog";
 const tabs = [
   { name: "Dashboard", path: "/", icon: LayoutDashboard, testid: "nav-item-dashboard", perm: "transactions.view" },
   { name: "Transactions", path: "/transactions", icon: ListOrdered, testid: "nav-item-transactions", perm: "transactions.view" },
+  { name: "Funds", path: "/funds", icon: PiggyBank, testid: "nav-item-funds", perm: "transactions.view" },
   { name: "Reports", path: "/reports", icon: FileText, testid: "nav-item-reports", perm: "reports.view" },
   { name: "Settings", path: "/settings", icon: SettingsIcon, testid: "nav-item-settings", perm: "settings.any" },
 ];

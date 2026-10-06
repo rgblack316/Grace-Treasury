@@ -33,7 +33,7 @@ export default function Settings() {
   const canData = can("data.manage");
 
   const available = [];
-  if (canSettings) available.push("accounts", "funds", "categories", "payees", "coa", "church");
+  if (canSettings) available.push("accounts", "funds", "categories", "payees", "church");
   if (canUsers) available.push("roles", "users");
   if (canData) available.push("backup");
   const first = available[0] || "none";
@@ -54,7 +54,6 @@ export default function Settings() {
             {canSettings && <TabsTrigger value="funds" data-testid="settings-tab-funds">Funds</TabsTrigger>}
             {canSettings && <TabsTrigger value="categories" data-testid="settings-tab-categories">Categories</TabsTrigger>}
             {canSettings && <TabsTrigger value="payees" data-testid="settings-tab-payees">Payees</TabsTrigger>}
-            {canSettings && <TabsTrigger value="coa" data-testid="settings-tab-coa">Chart of Accounts</TabsTrigger>}
             {canSettings && <TabsTrigger value="church" data-testid="settings-tab-church">Church Info</TabsTrigger>}
             {canUsers && <TabsTrigger value="roles" data-testid="settings-tab-roles">Roles</TabsTrigger>}
             {canUsers && <TabsTrigger value="users" data-testid="settings-tab-users">Users</TabsTrigger>}
@@ -65,7 +64,6 @@ export default function Settings() {
           {canSettings && <TabsContent value="funds"><FundsTab /></TabsContent>}
           {canSettings && <TabsContent value="categories"><CategoriesTab /></TabsContent>}
           {canSettings && <TabsContent value="payees"><PayeesTab /></TabsContent>}
-          {canSettings && <TabsContent value="coa"><CoaTab /></TabsContent>}
           {canSettings && <TabsContent value="church"><ChurchTab /></TabsContent>}
           {canUsers && <TabsContent value="roles"><RolesTab /></TabsContent>}
           {canUsers && <TabsContent value="users"><UsersTab me={user} /></TabsContent>}
@@ -187,11 +185,16 @@ function AccountsTab() {
 function FundsTab() {
   const { items } = useCrud("funds");
   return (
-    <ManagerCard title="Church Funds" description="Track money by purpose, independent of which account holds it."
+    <ManagerCard title="Church Funds" description="Track money by purpose, independent of which account holds it. Set a starting balance for funds you already have."
       items={items} path="funds" label="Fund"
-      columns={(f) => <div><div className="font-medium text-slate-800">{f.name}</div><div className="text-xs text-muted-foreground">{f.description || "—"}</div></div>}
-      fields={[{ key: "name", label: "Fund Name", placeholder: "Building Fund" }, { key: "description", label: "Description", placeholder: "Optional" }]}
-      buildPayload={(f) => ({ name: f.name, description: f.description || "", active: true })}
+      columns={(f) => <div><div className="font-medium text-slate-800">{f.name}</div><div className="text-xs text-muted-foreground">{f.description || "—"}{(f.opening_balance ? ` · Opening ${money(f.opening_balance)}${f.opening_date ? ` as of ${f.opening_date}` : ""}` : "")}</div></div>}
+      fields={[
+        { key: "name", label: "Fund Name", placeholder: "Building Fund" },
+        { key: "description", label: "Description", placeholder: "Optional" },
+        { key: "opening_balance", label: "Opening Balance", type: "number", placeholder: "0.00" },
+        { key: "opening_date", label: "Opening Date", type: "date" },
+      ]}
+      buildPayload={(f) => ({ name: f.name, description: f.description || "", opening_balance: Number(f.opening_balance || 0), opening_date: f.opening_date || "", active: true })}
     />
   );
 }
@@ -216,22 +219,6 @@ function PayeesTab() {
       columns={(p) => <div className="font-medium text-slate-800">{p.name}</div>}
       fields={[{ key: "name", label: "Payee / Vendor Name", placeholder: "Frontier Communications" }]}
       buildPayload={(f) => ({ name: f.name, active: true })}
-    />
-  );
-}
-
-function CoaTab() {
-  const { items } = useCrud("coa");
-  return (
-    <ManagerCard title="Chart of Accounts" description="The standard accounting structure, seeded and fully editable."
-      items={items} path="coa" label="Account"
-      columns={(c) => <div className="flex items-center gap-2"><span className="font-mono text-sm text-muted-foreground">{c.code}</span><span className="font-medium text-slate-800">{c.name}</span><Badge variant="secondary">{c.group}</Badge></div>}
-      fields={[
-        { key: "code", label: "Code", placeholder: "5000" },
-        { key: "name", label: "Name", placeholder: "Utilities" },
-        { key: "group", label: "Group", type: "select", placeholder: "Choose group", options: ["Asset", "Liability", "Equity", "Income", "Expense"].map((g) => ({ value: g, label: g })) },
-      ]}
-      buildPayload={(f) => ({ code: f.code || "", name: f.name, group: f.group || "Expense", active: true })}
     />
   );
 }
