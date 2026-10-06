@@ -7,6 +7,7 @@ import Setup from "@/pages/Setup";
 import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
 import Transactions from "@/pages/Transactions";
+import FundActivity from "@/pages/FundActivity";
 import Reports from "@/pages/Reports";
 import Settings from "@/pages/Settings";
 
@@ -36,6 +37,7 @@ function App() {
             >
               <Route path="/" element={<Dashboard />} />
               <Route path="/transactions" element={<Transactions />} />
+              <Route path="/funds" element={<FundActivity />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/settings" element={<Settings />} />
             </Route>
