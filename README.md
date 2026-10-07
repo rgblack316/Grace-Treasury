@@ -71,6 +71,31 @@ You can create your own roles with any combination of these permissions:
 
 This runs the whole stack (frontend + backend + MongoDB) on your own machine.
 
+### Easiest: one-line scripts (Ubuntu / Debian)
+
+On a fresh Ubuntu 22.04+/Debian 12+ server, the helper scripts install Docker, clone the repo,
+generate a secure `.env`, and start everything for you. Run as your normal user (not root):
+
+```bash
+# Fresh install
+curl -fsSL https://raw.githubusercontent.com/<your-username>/grace-treasury/main/install.sh -o install.sh
+bash install.sh
+```
+
+Later, to update to the newest version (this makes a safety database backup first, then
+fast-forwards the code and rebuilds — your data volume is never touched):
+
+```bash
+cd ~/grace-treasury
+./upgrade.sh
+```
+
+> The scripts default to cloning `https://github.com/rgblack316/grace-treasury.git`. Override with
+> `REPO_URL=... bash install.sh` if your repository lives elsewhere, and `APP_DIR=... ./upgrade.sh`
+> if you installed somewhere other than `~/grace-treasury`.
+
+Prefer to do it by hand? Follow the manual steps below.
+
 ### 1. Install prerequisites
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/)
 
