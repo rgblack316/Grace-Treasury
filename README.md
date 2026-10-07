@@ -78,7 +78,7 @@ generate a secure `.env`, and start everything for you. Run as your normal user 
 
 ```bash
 # Fresh install
-curl -fsSL https://raw.githubusercontent.com/<your-username>/grace-treasury/main/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/rgblack316/Grace-Treasury/main/install.sh -o install.sh
 bash install.sh
 ```
 
@@ -90,7 +90,7 @@ cd ~/grace-treasury
 ./upgrade.sh
 ```
 
-> The scripts default to cloning `https://github.com/rgblack316/grace-treasury.git`. Override with
+> The scripts default to cloning `https://github.com/rgblack316/Grace-Treasury.git`. Override with
 > `REPO_URL=... bash install.sh` if your repository lives elsewhere, and `APP_DIR=... ./upgrade.sh`
 > if you installed somewhere other than `~/grace-treasury`.
 
@@ -101,7 +101,7 @@ Prefer to do it by hand? Follow the manual steps below.
 
 ### 2. Get the code
 ```bash
-git clone https://github.com/<your-username>/grace-treasury.git
+git clone https://github.com/rgblack316/Grace-Treasury.git grace-treasury
 cd grace-treasury
 ```
 
