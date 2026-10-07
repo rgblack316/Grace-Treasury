@@ -14,7 +14,7 @@ set -euo pipefail
 #     ./install.sh
 # ============================================================
 
-REPO_URL="${REPO_URL:-https://github.com/rgblack316/grace-treasury.git}"
+REPO_URL="${REPO_URL:-https://github.com/rgblack316/Grace-Treasury.git}"
 # Leave empty by default; it is resolved to the real user's home below so that
 # running via sudo does not accidentally install into /root.
 INSTALL_DIR="${INSTALL_DIR:-}"
