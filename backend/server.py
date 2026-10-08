@@ -611,6 +611,15 @@ async def list_transactions(
             ]
         }]
     items = await db.transactions.find(query, {"_id": 0}).sort("date", -1).to_list(5000)
+
+    # Within the same date, show higher check numbers first (checks before non-check
+    # entries like deposits/transfers). Check numbers are stored as strings.
+    def _check_sort_key(t):
+        raw = (t.get("check_number") or "").strip()
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        return int(digits) if digits else -1
+
+    items.sort(key=lambda t: (t.get("date", ""), _check_sort_key(t)), reverse=True)
     ids = [t["id"] for t in items]
     counts = {}
     if ids:
