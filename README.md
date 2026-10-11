@@ -94,6 +94,33 @@ cd ~/grace-treasury
 > `REPO_URL=... bash install.sh` if your repository lives elsewhere, and `APP_DIR=... ./upgrade.sh`
 > if you installed somewhere other than `~/grace-treasury`.
 
+#### One-time manual upgrade (existing VMs on an older script)
+
+If a server is running an older copy of `upgrade.sh` that cancels because of files in `backups/`
+(or because the script itself was hand-edited), the script cannot update itself. Do this **once**
+per server to get onto the fixed version — afterwards `./upgrade.sh` works normally:
+
+```bash
+cd ~/grace-treasury            # or your install path
+
+# 1. (Optional but recommended) take a manual database backup first
+docker compose exec -T mongo mongodump --db church_treasury --archive --gzip \
+  > backups/manual-$(date +%F_%H-%M-%S).archive.gz
+
+# 2. Discard any local edits to tracked files (this does NOT delete your backups/ or .env —
+#    untracked files and ignored files are left untouched)
+git checkout -- .
+
+# 3. Pull the latest code. Files in backups/ are untracked, so they do not block this.
+git pull --ff-only origin main
+
+# 4. Rebuild and restart (your MongoDB data volume is never touched)
+docker compose up -d --build
+```
+
+From then on, the updated `upgrade.sh` ignores the `backups/` folder, so routine upgrades are just
+`./upgrade.sh`.
+
 Prefer to do it by hand? Follow the manual steps below.
 
 ### 1. Install prerequisites
