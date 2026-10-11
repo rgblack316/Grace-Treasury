@@ -36,7 +36,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import TransactionDialog from "@/components/TransactionDialog";
 import ImportDialog from "@/components/ImportDialog";
-import { Search, Pencil, Trash2, Plus, X, Upload, Paperclip, Scale } from "lucide-react";
+import { Search, Pencil, Trash2, Plus, X, Upload, Paperclip, Scale, Ban, RotateCcw } from "lucide-react";
 
 const ALL = "__all__";
 
@@ -116,6 +116,17 @@ export default function Transactions() {
     }
   };
 
+  const toggleVoid = async (t) => {
+    const next = !t.voided;
+    try {
+      await api.patch(`/transactions/${t.id}/void`, { voided: next });
+      toast.success(next ? "Marked as void — removed from balances" : "Void removed — restored to balances");
+      load();
+    } catch {
+      toast.error("Could not update");
+    }
+  };
+
   const doDelete = async () => {
     await api.delete(`/transactions/${deleteId}`);
     toast.success("Transaction deleted");
@@ -133,9 +144,10 @@ export default function Transactions() {
   };
 
   const signed = (t) => {
-    if (t.type === "income") return <span className="text-[#15803D]">+{money(t.amount)}</span>;
-    if (t.type === "expense") return <span className="text-[#B91C1C]">−{money(t.amount)}</span>;
-    return <span className="text-[#1D4ED8]">{money(t.amount)}</span>;
+    const cls = t.voided ? "line-through text-muted-foreground" : "";
+    if (t.type === "income") return <span className={cls || "text-[#15803D]"}>+{money(t.amount)}</span>;
+    if (t.type === "expense") return <span className={cls || "text-[#B91C1C]"}>−{money(t.amount)}</span>;
+    return <span className={cls || "text-[#1D4ED8]"}>{money(t.amount)}</span>;
   };
 
   const hasFilters = Object.values(filters).some(Boolean);
@@ -245,12 +257,17 @@ export default function Transactions() {
               <TableRow><TableCell colSpan={9} className="text-center py-10 text-muted-foreground">No transactions found.</TableCell></TableRow>
             )}
             {txns.map((t) => (
-              <TableRow key={t.id} data-testid={`txn-row-${t.id}`} className={t.cleared ? "bg-[#F0FDF4]/40" : ""}>
+              <TableRow key={t.id} data-testid={`txn-row-${t.id}`} className={t.voided ? "opacity-60 bg-[#FAFAF9]" : (t.cleared ? "bg-[#F0FDF4]/40" : "")}>
                 <TableCell className="text-center">
-                  <Checkbox checked={!!t.cleared} disabled={!canManage} onCheckedChange={(c) => toggleCleared(t, !!c)} data-testid={`cleared-${t.id}`} />
+                  <Checkbox checked={!!t.cleared} disabled={!canManage || !!t.voided} onCheckedChange={(c) => toggleCleared(t, !!c)} data-testid={`cleared-${t.id}`} />
                 </TableCell>
                 <TableCell className="font-mono text-sm whitespace-nowrap">{fmtDate(t.date)}</TableCell>
-                <TableCell>{typeBadge(t.type)}</TableCell>
+                <TableCell>
+                  <span className="inline-flex items-center gap-1.5">
+                    {typeBadge(t.type)}
+                    {t.voided && <Badge variant="outline" className="bg-[#FEF2F2] text-[#B91C1C] border-[#FECACA]" data-testid={`voided-badge-${t.id}`}>Void</Badge>}
+                  </span>
+                </TableCell>
                 <TableCell className="text-sm whitespace-nowrap">{maps.acc[t.account_id]?.mask}{t.type === "transfer" && t.to_account_id ? ` → ${maps.acc[t.to_account_id]?.mask}` : ""}</TableCell>
                 <TableCell className="text-sm max-w-[220px] truncate">
                   <span className="inline-flex items-center gap-1.5">
@@ -264,6 +281,9 @@ export default function Transactions() {
                 <TableCell className="text-right whitespace-nowrap">
                   {canManage ? (
                     <>
+                      <Button variant="ghost" size="icon" className={`h-8 w-8 ${t.voided ? "text-[#15803D]" : "text-[#B45309]"}`} onClick={() => toggleVoid(t)} title={t.voided ? "Restore (count in balances again)" : "Mark void (never posted by bank)"} data-testid={`btn-void-${t.id}`}>
+                        {t.voided ? <RotateCcw className="h-4 w-4" /> : <Ban className="h-4 w-4" />}
+                      </Button>
                       <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(t); setDialogOpen(true); }} data-testid={`btn-edit-${t.id}`}>
                         <Pencil className="h-4 w-4" />
                       </Button>
