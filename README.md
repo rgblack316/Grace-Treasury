@@ -27,13 +27,19 @@ installs it starts with a clean, empty database and creates its own administrato
   (e.g. a $1,000 offering: $600 General, $400 Building), with a helper showing the remaining unallocated amount.
   A single fund stays the quick default; splitting is optional.
 - **Income / Expense / Transfer** — record expenses with Check #, Payee, Memo/Reason; record income
-  and transfers between accounts. Everything is searchable and filterable.
+  and transfers between accounts. Filter the ledger by account, type, fund, category, **cleared status**,
+  or date range, and search by memo or check number. Same-day checks are listed highest-number-first.
 - **Dashboard** — current balance per account and per fund (with roll-ups for nested funds), plus recent activity.
 - **Monthly Treasurer's Report** — pick any custom date range (or a preset), choose which accounts
   to include, and view/print it or download a letter-size PDF. Shows Balance Forward, itemized
   Expenses and Income, totals, and New Balance, with optional category-summary and fund-balance sections.
 - **Bank reconciliation** — tick off each transaction that has cleared the bank; a running cleared
-  balance per account helps you match your statement.
+  balance per account helps you match your statement. Filter the ledger by **status (cleared /
+  uncleared)** to quickly see what has not posted yet.
+- **Void stale entries** — mark a transaction as **void** (e.g. a check that was never presented to the
+  bank) so it no longer counts toward any account balance, reconciliation total, fund balance, or report —
+  while staying in the ledger with a clear "Void" badge for your audit trail. Restore it anytime if it
+  eventually posts.
 - **Receipt attachments** — attach photos (JPG/PNG/HEIC/WEBP) or PDFs to any transaction. Files are
   stored **inside MongoDB (GridFS)**, so everything stays on your server — no cloud, no API keys.
 - **Spreadsheet import** — bulk-import past months from a CSV template; new payees, categories, and
@@ -188,10 +194,13 @@ uvicorn server:app --host 0.0.0.0 --port 8001
 ```bash
 cd frontend
 yarn install
-# set REACT_APP_BACKEND_URL in frontend/.env (e.g. http://localhost:8001)
 yarn start      # development
 # or: yarn build  -> serve the build/ folder with any static server
 ```
+
+> The app calls the backend at the **same origin** under `/api` (in Docker, the Nginx container proxies
+> `/api` to the backend). For local `yarn start` development, run the frontend behind a proxy that forwards
+> `/api` to `http://localhost:8001`, or serve the built frontend from the same origin as the API.
 
 You'll also need MongoDB running locally (`mongodb://localhost:27017`).
 
