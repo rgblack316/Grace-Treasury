@@ -292,7 +292,7 @@ async def signed_amount_for_account(txn: dict, account_id: str) -> float:
 
 async def account_balance(account: dict, up_to: Optional[str] = None) -> float:
     """Balance of an account. up_to is inclusive end date (YYYY-MM-DD) or None for all."""
-    query = {"$or": [{"account_id": account["id"]}, {"to_account_id": account["id"]}]}
+    query = {"$or": [{"account_id": account["id"]}, {"to_account_id": account["id"]}], "voided": {"$ne": True}}
     if up_to is not None:
         query["date"] = {"$lte": up_to}
     bal = float(account.get("opening_balance", 0.0) or 0.0)
@@ -306,6 +306,7 @@ async def balance_before(account: dict, start: str) -> float:
     query = {
         "$or": [{"account_id": account["id"]}, {"to_account_id": account["id"]}],
         "date": {"$lt": start},
+        "voided": {"$ne": True},
     }
     bal = float(account.get("opening_balance", 0.0) or 0.0)
     async for txn in db.transactions.find(query, {"_id": 0}):
@@ -677,13 +678,32 @@ class ClearedInput(BaseModel):
     cleared: bool
 
 
+class VoidInput(BaseModel):
+    voided: bool
+
+
 @api_router.patch("/transactions/{txn_id}/cleared")
 async def set_cleared(txn_id: str, data: ClearedInput, user: dict = Depends(require_txn_manage)):
     existing = await db.transactions.find_one({"id": txn_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    if data.cleared and existing.get("voided"):
+        raise HTTPException(status_code=400, detail="This entry is voided. Restore it before marking it cleared.")
     await db.transactions.update_one({"id": txn_id}, {"$set": {"cleared": data.cleared}})
     return {"ok": True, "cleared": data.cleared}
+
+
+@api_router.patch("/transactions/{txn_id}/void")
+async def set_voided(txn_id: str, data: VoidInput, user: dict = Depends(require_txn_manage)):
+    existing = await db.transactions.find_one({"id": txn_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    update = {"voided": data.voided}
+    # A voided entry is removed from all balances, so it can't also be reconciled as cleared.
+    if data.voided:
+        update["cleared"] = False
+    await db.transactions.update_one({"id": txn_id}, {"$set": update})
+    return {"ok": True, "voided": data.voided}
 
 
 # ----------------------------- Reconciliation summary -----------------------------
@@ -696,7 +716,7 @@ async def reconcile_summary(account_id: str, user: dict = Depends(require_txn_vi
     cleared_bal = float(acc.get("opening_balance", 0.0) or 0.0)
     uncleared_count = 0
     uncleared_total = 0.0
-    query = {"$or": [{"account_id": account_id}, {"to_account_id": account_id}]}
+    query = {"$or": [{"account_id": account_id}, {"to_account_id": account_id}], "voided": {"$ne": True}}
     async for txn in db.transactions.find(query, {"_id": 0}):
         eff = await signed_amount_for_account(txn, account_id)
         if txn.get("cleared"):
@@ -943,7 +963,7 @@ async def compute_fund_balances(up_to: Optional[str] = None):
             ob = 0.0
         fmap[f["id"]] = {**f, "balance": ob}
 
-    txn_q = {"type": {"$in": ["income", "expense"]}}
+    txn_q = {"type": {"$in": ["income", "expense"]}, "voided": {"$ne": True}}
     if up_to is not None:
         txn_q["date"] = {"$lte": up_to}
     async for t in db.transactions.find(txn_q, {"_id": 0}):
@@ -1106,6 +1126,7 @@ async def build_report(start: str, end: str, account_ids: List[str]):
         query = {
             "$or": [{"account_id": acc["id"]}, {"to_account_id": acc["id"]}],
             "date": {"$gte": start, "$lte": end},
+            "voided": {"$ne": True},
         }
         txns = await db.transactions.find(query, {"_id": 0}).sort("date", 1).to_list(5000)
         expenses = []
@@ -1159,6 +1180,7 @@ async def build_report(start: str, end: str, account_ids: List[str]):
         "account_id": {"$in": account_ids},
         "date": {"$gte": start, "$lte": end},
         "type": {"$in": ["income", "expense"]},
+        "voided": {"$ne": True},
     }
     cat_summary = {}
     async for t in db.transactions.find(cat_query, {"_id": 0}):
