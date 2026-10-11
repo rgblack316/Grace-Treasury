@@ -120,7 +120,14 @@ echo "GitHub has $BEHIND new commit(s)."
 # Back up the database before changing application code
 # ------------------------------------------------------------
 
-mkdir -p "$DB_BACKUP_DIR"
+# The Docker containers run as root and write nightly backups into ./backups,
+# which can leave that folder owned by root. If so, reclaim it for the current
+# user (root can still write there afterwards) so this backup can be created.
+if [ ! -w "$BACKUP_DIR" ] 2>/dev/null || ! mkdir -p "$DB_BACKUP_DIR" 2>/dev/null; then
+  log "The backups/ folder is not writable by $(id -un) (likely created by Docker as root). Fixing ownership..."
+  sudo mkdir -p "$DB_BACKUP_DIR"
+  sudo chown -R "$(id -u):$(id -g)" "$BACKUP_DIR"
+fi
 
 # Read DB_NAME from .env without sourcing the file as shell code.
 DB_NAME="$(awk -F= '$1 == "DB_NAME" {print substr($0, index($0,"=")+1); exit}' .env)"
