@@ -90,6 +90,9 @@ credentials.json
 *.key
 .credentials
 
+# Backups generated at runtime (live DB exports / pre-upgrade dumps) — never version these
+backups/
+
 # Platform / build-tool artifacts (kept locally, excluded from the public repo)
 .emergent/
 .gitconfig

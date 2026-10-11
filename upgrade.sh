@@ -64,15 +64,16 @@ echo "Current containers:"
 docker_cmd compose ps
 
 # ------------------------------------------------------------
-# Refuse unsafe Git states
+# Refuse unsafe Git states (changes inside backups/ are ignored)
 # ------------------------------------------------------------
 
-if [ -n "$(git status --porcelain)" ]; then
+if [ -n "$(git status --porcelain -- ':!backups')" ]; then
   echo
   echo "Local Git changes were detected:"
-  git status --short
+  git status --short -- ':!backups'
   echo
   echo "Upgrade cancelled. Commit, stash, or otherwise resolve these changes first."
+  echo "(Changes inside the backups/ folder are ignored and do not block upgrades.)"
   exit 1
 fi
 
