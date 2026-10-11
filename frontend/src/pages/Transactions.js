@@ -52,6 +52,7 @@ export default function Transactions() {
     type: "",
     fund_id: "",
     category_id: "",
+    cleared: "",
     start: "",
     end: "",
     search: "",
@@ -101,7 +102,7 @@ export default function Transactions() {
   };
 
   const clearFilters = () => {
-    setFilters({ account_id: "", type: "", fund_id: "", category_id: "", start: "", end: "", search: "" });
+    setFilters({ account_id: "", type: "", fund_id: "", category_id: "", cleared: "", start: "", end: "", search: "" });
     setParams({});
   };
 
@@ -222,6 +223,14 @@ export default function Transactions() {
             <SelectContent>
               <SelectItem value={ALL}>All categories</SelectItem>
               {lists.categories.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={filters.cleared || ALL} onValueChange={(v) => setF("cleared", v)}>
+            <SelectTrigger data-testid="filter-cleared"><SelectValue placeholder="All statuses" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL}>All statuses</SelectItem>
+              <SelectItem value="true">Cleared</SelectItem>
+              <SelectItem value="false">Uncleared</SelectItem>
             </SelectContent>
           </Select>
           <div className="flex items-center gap-2">
