@@ -233,10 +233,11 @@ export default function Transactions() {
               <SelectItem value="false">Uncleared</SelectItem>
             </SelectContent>
           </Select>
-          <div className="flex items-center gap-2">
-            <Input type="date" value={filters.start} onChange={(e) => setF("start", e.target.value)} data-testid="filter-start" />
-            <span className="text-muted-foreground text-sm">to</span>
-            <Input type="date" value={filters.end} onChange={(e) => setF("end", e.target.value)} data-testid="filter-end" />
+          <div className="flex items-center gap-2 min-w-0 md:col-span-2 lg:col-span-4">
+            <span className="text-muted-foreground text-sm shrink-0">Date</span>
+            <Input type="date" value={filters.start} onChange={(e) => setF("start", e.target.value)} className="min-w-0 flex-1" data-testid="filter-start" />
+            <span className="text-muted-foreground text-sm shrink-0">to</span>
+            <Input type="date" value={filters.end} onChange={(e) => setF("end", e.target.value)} className="min-w-0 flex-1" data-testid="filter-end" />
           </div>
         </div>
         {hasFilters && (
