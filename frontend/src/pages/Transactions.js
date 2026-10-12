@@ -61,6 +61,8 @@ export default function Transactions() {
   const [importOpen, setImportOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleteId, setDeleteId] = useState(null);
+  const [pageSize, setPageSize] = useState(25); // 10 | 25 | 50 | 100 | "all"
+  const [page, setPage] = useState(1);
 
   const load = () => {
     const q = {};
@@ -95,6 +97,18 @@ export default function Transactions() {
     cat: Object.fromEntries(lists.categories.map((c) => [c.id, c.name])),
     payee: Object.fromEntries(lists.payees.map((p) => [p.id, p.name])),
   }), [lists]);
+
+  // Pagination (client-side over the already-filtered list)
+  const total = txns.length;
+  const perPage = pageSize === "all" ? (total || 1) : pageSize;
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const currentPage = Math.min(page, totalPages);
+  const startIdx = (currentPage - 1) * perPage;
+  const paged = pageSize === "all" ? txns : txns.slice(startIdx, startIdx + perPage);
+
+  // Reset to the first page whenever filters change or the page size changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setPage(1); }, [filters, pageSize]);
 
   const setF = (k, v) => {
     setFilters((f) => ({ ...f, [k]: v === ALL ? "" : v }));
@@ -266,7 +280,7 @@ export default function Transactions() {
             {txns.length === 0 && (
               <TableRow><TableCell colSpan={9} className="text-center py-10 text-muted-foreground">No transactions found.</TableCell></TableRow>
             )}
-            {txns.map((t) => (
+            {paged.map((t) => (
               <TableRow key={t.id} data-testid={`txn-row-${t.id}`} className={t.voided ? "opacity-60 bg-[#FAFAF9]" : (t.cleared ? "bg-[#F0FDF4]/40" : "")}>
                 <TableCell className="text-center">
                   <Checkbox checked={!!t.cleared} disabled={!canManage || !!t.voided} onCheckedChange={(c) => toggleCleared(t, !!c)} data-testid={`cleared-${t.id}`} />
@@ -310,7 +324,33 @@ export default function Transactions() {
           </TableBody>
         </Table>
         {txns.length > 0 && (
-          <div className="px-4 py-3 text-sm text-muted-foreground border-t border-[#EEEDE7]">{txns.length} transaction{txns.length !== 1 ? "s" : ""}</div>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 border-t border-[#EEEDE7]">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span>Show</span>
+              <Select value={String(pageSize)} onValueChange={(v) => setPageSize(v === "all" ? "all" : Number(v))}>
+                <SelectTrigger className="h-8 w-[90px]" data-testid="page-size-select"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="10">10</SelectItem>
+                  <SelectItem value="25">25</SelectItem>
+                  <SelectItem value="50">50</SelectItem>
+                  <SelectItem value="100">100</SelectItem>
+                  <SelectItem value="all">All</SelectItem>
+                </SelectContent>
+              </Select>
+              <span data-testid="pagination-info">
+                {pageSize === "all"
+                  ? `Showing all ${total} transaction${total !== 1 ? "s" : ""}`
+                  : `${startIdx + 1}–${Math.min(startIdx + perPage, total)} of ${total}`}
+              </span>
+            </div>
+            {pageSize !== "all" && totalPages > 1 && (
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)} data-testid="page-prev">Previous</Button>
+                <span className="text-sm text-muted-foreground" data-testid="page-indicator">Page {currentPage} of {totalPages}</span>
+                <Button variant="outline" size="sm" disabled={currentPage >= totalPages} onClick={() => setPage(currentPage + 1)} data-testid="page-next">Next</Button>
+              </div>
+            )}
+          </div>
         )}
       </Card>
 
