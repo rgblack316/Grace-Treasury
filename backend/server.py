@@ -31,7 +31,7 @@ from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable,
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, PageBreak,
 )
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
@@ -1268,7 +1268,10 @@ async def treasurer_report_pdf(
     elems.append(Spacer(1, 6))
     elems.append(HRFlowable(width="100%", thickness=1.2, color=navy))
 
-    for acc in report["accounts"]:
+    for idx, acc in enumerate(report["accounts"]):
+        # each bank account after the first starts on its own page
+        if idx > 0:
+            elems.append(PageBreak())
         title = acc["mask"] or acc["name"]
         elems.append(Paragraph(f"Account {title} &nbsp; <font size=9 color='#64748B'>{acc['name']}</font>", h_acc))
         elems.append(Paragraph(f"Balance Forward as of {fmt_date(start)}: <b>{money(acc['balance_forward'])}</b>", normal))
@@ -1319,7 +1322,13 @@ async def treasurer_report_pdf(
         ]))
         elems.append(ts)
 
-    if include_category and report["category_summary"]:
+    show_category = include_category and report["category_summary"]
+    show_funds = include_funds and report["fund_balances"]
+    # category summary + fund balances close the report on a final page
+    if show_category or show_funds:
+        elems.append(PageBreak())
+
+    if show_category:
         elems.append(Paragraph("Income &amp; Expense by Category", h_acc))
         cat_data = [["Category", "Type", "Amount"]]
         for c in report["category_summary"]:
@@ -1328,7 +1337,7 @@ async def treasurer_report_pdf(
         tc.setStyle(_table_style(navy, len(cat_data), total_row=False))
         elems.append(tc)
 
-    if include_funds and report["fund_balances"]:
+    if show_funds:
         elems.append(Paragraph("Fund Balances", h_acc))
         f_data = [["Fund", "Balance"]]
         for f in report["fund_balances"]:

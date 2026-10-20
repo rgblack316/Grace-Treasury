@@ -164,8 +164,8 @@ function ReportView({ report, includeCategory, includeFunds }) {
         <p className="text-slate-500 text-sm mt-0.5">{fmtDate(report.start)} — {fmtDate(report.end)}</p>
       </div>
 
-      {report.accounts.map((acc) => (
-        <div key={acc.id} className="mb-10 avoid-break">
+      {report.accounts.map((acc, idx) => (
+        <div key={acc.id} className={`mb-10 ${idx > 0 ? "print-page-break" : ""}`}>
           <div className="flex items-baseline justify-between border-b border-[#E5E0D8] pb-2">
             <h3 className="font-serif text-xl font-bold text-slate-900">
               Account {acc.mask} <span className="text-sm font-sans font-normal text-slate-500">{acc.name}</span>
@@ -257,6 +257,10 @@ function ReportView({ report, includeCategory, includeFunds }) {
           </div>
         </div>
       ))}
+
+      {((includeCategory && report.category_summary.length > 0) || (includeFunds && report.fund_balances.length > 0)) && (
+        <div className="print-page-break" aria-hidden="true" />
+      )}
 
       {includeCategory && report.category_summary.length > 0 && (
         <div className="mb-8 avoid-break">
