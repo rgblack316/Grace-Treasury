@@ -102,3 +102,12 @@ memory/
 test_reports/
 auth_testing.md
 
+
+# Secrets and data — never commit
+.env
+.env.*
+!env.example
+backups/
+backend/backups/
+*.pem
+*.key

@@ -120,6 +120,11 @@ async def resolve_permissions(user: dict):
 async def get_current_user(request: Request) -> dict:
     auth_header = request.headers.get("Authorization", "")
     token = auth_header[7:] if auth_header.startswith("Bearer ") else None
+    return await user_from_token(token)
+
+
+async def user_from_token(token: Optional[str]) -> dict:
+    """Validate a JWT and load the user with resolved permissions."""
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
@@ -151,6 +156,48 @@ require_reports = require_permission("reports.view")
 require_settings = require_permission("settings.manage")
 require_users = require_permission("users.manage")
 require_data = require_permission("data.manage")
+
+
+async def user_for_download(request: Request, auth: Optional[str], permission: str) -> dict:
+    """Auth for download links that may pass the token as ?auth=…; still enforces the permission."""
+    token = auth
+    if not token:
+        header = request.headers.get("Authorization", "")
+        token = header[7:] if header.startswith("Bearer ") else None
+    user = await user_from_token(token)
+    if permission not in user.get("permissions", []):
+        raise HTTPException(status_code=403, detail="You do not have permission to perform this action")
+    return user
+
+
+def is_admin(user: dict) -> bool:
+    return user.get("role") == "admin"
+
+
+async def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="Only an administrator can perform this action")
+    return user
+
+
+def ensure_can_grant(actor: dict, permissions: List[str]):
+    """Non-admins may only grant permissions they themselves hold (prevents privilege escalation)."""
+    if is_admin(actor):
+        return
+    extra = set(permissions) - set(actor.get("permissions", []))
+    if extra:
+        raise HTTPException(status_code=403, detail="You cannot grant permissions you do not have yourself")
+
+
+async def ensure_can_assign_role(actor: dict, role_id: Optional[str]):
+    if is_admin(actor) or not role_id:
+        return
+    role = await db.roles.find_one({"id": role_id})
+    if not role:
+        raise HTTPException(status_code=400, detail="Role not found")
+    if role.get("is_system"):
+        raise HTTPException(status_code=403, detail="Only an administrator can assign the Administrator role")
+    ensure_can_grant(actor, role.get("permissions", []))
 
 
 def validate_strong_password(pw: str):
@@ -384,6 +431,7 @@ async def list_roles(user: dict = Depends(get_current_user)):
 @api_router.post("/roles")
 async def create_role(data: RoleInput, user: dict = Depends(require_users)):
     perms = [p for p in data.permissions if p in ALL_PERMISSIONS]
+    ensure_can_grant(user, perms)
     doc = {"id": new_id(), "name": data.name.strip(), "permissions": perms, "is_system": False, "created_at": now_iso()}
     await db.roles.insert_one(doc)
     return clean(doc)
@@ -397,6 +445,8 @@ async def update_role(role_id: str, data: RoleInput, user: dict = Depends(requir
     if role.get("is_system"):
         raise HTTPException(status_code=400, detail="The Administrator role cannot be modified")
     perms = [p for p in data.permissions if p in ALL_PERMISSIONS]
+    # must already hold everything the role grants now and after the change
+    ensure_can_grant(user, list(set(perms) | set(role.get("permissions", []))))
     await db.roles.update_one({"id": role_id}, {"$set": {"name": data.name.strip(), "permissions": perms}})
     return await db.roles.find_one({"id": role_id}, {"_id": 0})
 
@@ -408,6 +458,7 @@ async def delete_role(role_id: str, user: dict = Depends(require_users)):
         raise HTTPException(status_code=404, detail="Role not found")
     if role.get("is_system"):
         raise HTTPException(status_code=400, detail="The Administrator role cannot be deleted")
+    ensure_can_grant(user, role.get("permissions", []))
     if await db.users.count_documents({"role_id": role_id}) > 0:
         raise HTTPException(status_code=400, detail="This role is assigned to one or more users. Reassign them first.")
     await db.roles.delete_one({"id": role_id})
@@ -430,6 +481,7 @@ async def create_user(data: UserCreate, user: dict = Depends(require_users)):
     if existing:
         raise HTTPException(status_code=400, detail="A user with this email already exists")
     validate_strong_password(data.password)
+    await ensure_can_assign_role(user, data.role_id)
     role = await db.roles.find_one({"id": data.role_id}) if data.role_id else None
     doc = {
         "id": new_id(),
@@ -449,6 +501,10 @@ async def update_user(user_id: str, data: UserUpdate, user: dict = Depends(requi
     target = await db.users.find_one({"id": user_id})
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    if target.get("role") == "admin" and not is_admin(user):
+        raise HTTPException(status_code=403, detail="Only an administrator can modify an administrator account")
+    if data.role_id is not None:
+        await ensure_can_assign_role(user, data.role_id)
     update = {}
     if data.name is not None:
         update["name"] = data.name
@@ -474,6 +530,8 @@ async def delete_user(user_id: str, user: dict = Depends(require_users)):
     target = await db.users.find_one({"id": user_id})
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    if target.get("role") == "admin" and not is_admin(user):
+        raise HTTPException(status_code=403, detail="Only an administrator can delete an administrator account")
     await db.users.delete_one({"id": user_id})
     return {"ok": True}
 
@@ -774,16 +832,7 @@ async def list_attachments(txn_id: str, user: dict = Depends(require_txn_view)):
 
 @api_router.get("/attachments/{file_id}/download")
 async def download_attachment(file_id: str, request: Request, auth: Optional[str] = Query(None)):
-    token = auth
-    if not token:
-        header = request.headers.get("Authorization", "")
-        token = header[7:] if header.startswith("Bearer ") else None
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    try:
-        jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    await user_for_download(request, auth, "transactions.view")
     record = await db.files.find_one({"id": file_id, "is_deleted": False})
     if not record or not record.get("gridfs_id"):
         raise HTTPException(status_code=404, detail="File not found")
@@ -1423,7 +1472,7 @@ async def export_data(user: dict = Depends(require_data)):
 
 
 @api_router.post("/data/import")
-async def import_data(file: UploadFile = File(...), user: dict = Depends(require_data)):
+async def import_data(file: UploadFile = File(...), user: dict = Depends(require_admin)):
     import json as _json
     try:
         payload = _json.loads((await file.read()).decode("utf-8-sig", errors="replace"))
@@ -1557,13 +1606,7 @@ async def run_backup_now(user: dict = Depends(require_data)):
 
 @api_router.get("/backups/{name}/download")
 async def download_backup(name: str, request: Request, auth: Optional[str] = Query(None)):
-    token = auth or (request.headers.get("Authorization", "")[7:] if request.headers.get("Authorization", "").startswith("Bearer ") else None)
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    try:
-        jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    await user_for_download(request, auth, "data.manage")
     base = _safe_backup_name(name)
     full = os.path.join(BACKUP_DIR, base)
     if not os.path.exists(full):
@@ -1583,7 +1626,7 @@ async def delete_backup(name: str, user: dict = Depends(require_data)):
 
 
 @api_router.post("/backups/{name}/restore")
-async def restore_backup(name: str, user: dict = Depends(require_data)):
+async def restore_backup(name: str, user: dict = Depends(require_admin)):
     base = _safe_backup_name(name)
     full = os.path.join(BACKUP_DIR, base)
     if not os.path.exists(full):
