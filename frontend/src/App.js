@@ -10,12 +10,15 @@ import Transactions from "@/pages/Transactions";
 import FundActivity from "@/pages/FundActivity";
 import Reports from "@/pages/Reports";
 import Settings from "@/pages/Settings";
+import ChangePassword from "@/pages/ChangePassword";
 
-function ProtectedRoute({ children }) {
+function ProtectedRoute({ children, allowPasswordChange = false }) {
   const { user, ready, needsSetup } = useAuth();
   if (!ready) return <div className="min-h-screen grid place-items-center text-slate-500">Loading…</div>;
   if (needsSetup) return <Navigate to="/setup" replace />;
   if (!user) return <Navigate to="/login" replace />;
+  // A temporary password must be replaced before anything else.
+  if (user.must_change_password && !allowPasswordChange) return <Navigate to="/change-password" replace />;
   return children;
 }
 
@@ -28,6 +31,7 @@ function App() {
           <Routes>
             <Route path="/setup" element={<Setup />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/change-password" element={<ProtectedRoute allowPasswordChange><ChangePassword /></ProtectedRoute>} />
             <Route
               element={
                 <ProtectedRoute>

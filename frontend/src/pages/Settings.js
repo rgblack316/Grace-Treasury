@@ -21,7 +21,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, Pencil, Trash2, Save, Download, Upload, ShieldCheck, Loader2, AlertTriangle, Mail, Send, Lock, Unlock, RefreshCw } from "lucide-react";
+import { Plus, Pencil, Trash2, Save, Download, Upload, ShieldCheck, Loader2, AlertTriangle, Mail, Send, Lock, Unlock, RefreshCw, LogOut, History } from "lucide-react";
 
 const PW_HINT = "At least 12 characters with uppercase, lowercase, a number, and a symbol.";
 const strongPw = (p) => p.length >= 12 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /\d/.test(p) && /[^A-Za-z0-9]/.test(p);
@@ -71,7 +71,7 @@ export default function Settings() {
           {canUsers && <TabsContent value="roles"><RolesTab /></TabsContent>}
           {canUsers && <TabsContent value="users"><UsersTab me={user} /></TabsContent>}
           {canData && <TabsContent value="backup"><BackupTab /></TabsContent>}
-          {isAdmin && <TabsContent value="security"><SecurityTab /></TabsContent>}
+          {isAdmin && <TabsContent value="security"><SecurityTab /><AuditLog /></TabsContent>}
         </Tabs>
       )}
     </div>
@@ -336,6 +336,70 @@ function RolesTab() {
   );
 }
 
+const AUDIT_LABELS = {
+  "setup.admin_created": "Administrator account created",
+  "user.create": "Added user",
+  "user.rename": "Renamed user",
+  "user.role_change": "Changed role",
+  "user.password_reset": "Reset password",
+  "user.sign_out": "Signed user out",
+  "user.delete": "Removed user",
+  "self.password_change": "Changed own password",
+  "self.sign_out_everywhere": "Signed out other devices",
+  "role.create": "Created role",
+  "role.update": "Edited role",
+  "role.delete": "Deleted role",
+  "login.unlock": "Unlocked sign-in",
+  "settings.account_notices": "Account emails setting",
+};
+
+function AuditLog() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const load = () => {
+    setLoading(true);
+    api.get("/security/audit?limit=200").then((r) => setRows(r.data)).catch(() => {}).finally(() => setLoading(false));
+  };
+  useEffect(load, []);
+  const when = (iso) => new Date(iso).toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+  return (
+    <Card className="p-5 mt-4">
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <div>
+          <h3 className="font-serif text-lg font-semibold text-slate-900 flex items-center gap-2"><History className="h-5 w-5 text-[#B45309]" />Activity Log</h3>
+          <p className="text-sm text-muted-foreground">Who added, changed, reset, signed out or removed users and roles, and when.</p>
+        </div>
+        <Button variant="outline" size="icon" onClick={load} title="Refresh" data-testid="audit-refresh"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /></Button>
+      </div>
+      <div className="overflow-x-auto border-t border-[#EEEDE7]">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-slate-500 border-b border-[#EEEDE7]">
+              <th className="py-2 pr-3 font-medium">When</th>
+              <th className="py-2 pr-3 font-medium">Who</th>
+              <th className="py-2 pr-3 font-medium">Action</th>
+              <th className="py-2 pr-3 font-medium">Affected</th>
+              <th className="py-2 font-medium">Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {!loading && rows.length === 0 && <tr><td colSpan={5} className="py-6 text-center text-muted-foreground">No activity recorded yet.</td></tr>}
+            {rows.map((r) => (
+              <tr key={r.id} className="border-b border-[#F4F0E8] align-top" data-testid={`audit-row-${r.id}`}>
+                <td className="py-2 pr-3 whitespace-nowrap">{when(r.at)}</td>
+                <td className="py-2 pr-3 break-all">{r.actor_email || "—"}</td>
+                <td className="py-2 pr-3 whitespace-nowrap font-medium">{AUDIT_LABELS[r.action] || r.action}</td>
+                <td className="py-2 pr-3 break-all">{r.target_email || "—"}</td>
+                <td className="py-2 text-slate-600">{r.details || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
 function SecurityTab() {
   const [days, setDays] = useState("7");
   const [groups, setGroups] = useState([]);
@@ -460,7 +524,16 @@ function UsersTab({ me }) {
       setOpen(false); load();
     } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
   };
-  const doDelete = async () => { await api.delete(`/auth/users/${deleteId}`); toast.success("User removed"); setDeleteId(null); load(); };
+  const doDelete = async () => {
+    try { await api.delete(`/auth/users/${deleteId}`); toast.success("User removed"); load(); }
+    catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
+    setDeleteId(null);
+  };
+  const signOutUser = async (u) => {
+    try { await api.post(`/auth/users/${u.id}/sign-out`); toast.success(`${u.name} has been signed out everywhere`); }
+    catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
+  };
+  const editingSelf = editing && editing.id === me.id;
 
   return (
     <Card className="p-5 mt-4">
@@ -476,8 +549,10 @@ function UsersTab({ me }) {
               <div className="text-xs text-muted-foreground">{u.email}</div>
             </div>
             <div className="flex items-center gap-3">
+              {u.must_change_password && <Badge variant="outline" className="bg-[#FFFBEB] text-[#B45309] border-[#FDE68A]" title="Signed in with a temporary password; must choose a new one">Temporary password</Badge>}
               <Badge variant="outline" className={u.role === "admin" ? "text-[#B45309] border-[#FEF3C7]" : ""}>{u.role_name || "—"}</Badge>
               <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(u)} data-testid={`btn-edit-user-${u.id}`}><Pencil className="h-4 w-4" /></Button>
+              {u.id !== me.id && <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => signOutUser(u)} title="Sign out of all devices" data-testid={`btn-signout-user-${u.id}`}><LogOut className="h-4 w-4" /></Button>}
               {u.id !== me.id && <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => setDeleteId(u.id)} data-testid={`btn-delete-user-${u.id}`}><Trash2 className="h-4 w-4" /></Button>}
             </div>
           </div>
@@ -487,11 +562,17 @@ function UsersTab({ me }) {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent data-testid="user-dialog">
           <DialogHeader><DialogTitle className="font-serif">{editing ? "Edit User" : "Add User"}</DialogTitle>
-            <DialogDescription>{editing ? "Update this user's name, role, or password." : "Create a login and assign a role."}</DialogDescription></DialogHeader>
+            <DialogDescription>{editing ? (editingSelf ? "Update your name or role. Change your own password from your account menu." : "Update this user's name or role, or give them a temporary password.") : "Create a login with a temporary password. They'll choose their own the first time they sign in."}</DialogDescription></DialogHeader>
           <div className="space-y-4">
             <div className="space-y-1.5"><Label>Name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="user-name-input" /></div>
             <div className="space-y-1.5"><Label>Email</Label><Input type="email" value={form.email} disabled={!!editing} onChange={(e) => setForm({ ...form, email: e.target.value })} data-testid="user-email-input" /></div>
-            <div className="space-y-1.5"><Label>{editing ? "New Password (leave blank to keep)" : "Password"}</Label><Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={editing ? "••••••••" : ""} data-testid="user-password-input" /><p className="text-xs text-muted-foreground">{PW_HINT}</p></div>
+            {!editingSelf && (
+              <div className="space-y-1.5">
+                <Label>{editing ? "Reset password (leave blank to keep)" : "Temporary password"}</Label>
+                <Input type="password" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={editing ? "••••••••" : ""} data-testid="user-password-input" />
+                <p className="text-xs text-muted-foreground">{PW_HINT} {editing ? "Resetting signs them out everywhere, and they must choose a new password at next sign-in." : "They must change it at first sign-in."}</p>
+              </div>
+            )}
             <div className="space-y-1.5"><Label>Role</Label>
               <Select value={form.role_id} onValueChange={(v) => setForm({ ...form, role_id: v })}>
                 <SelectTrigger data-testid="user-role-select"><SelectValue placeholder="Choose a role" /></SelectTrigger>
@@ -528,6 +609,7 @@ function EmailBackupCard() {
       const body = {
         enabled: cfg.enabled, smtp_host: cfg.smtp_host || "", smtp_port: Number(cfg.smtp_port || 587),
         smtp_username: cfg.smtp_username || "", use_tls: cfg.use_tls, from_address: cfg.from_address || "", to_address: cfg.to_address || "",
+        notify_users: cfg.notify_users !== false,
       };
       if (cfg.smtp_password) body.smtp_password = cfg.smtp_password;
       await api.put("/settings/email", body);
@@ -566,6 +648,13 @@ function EmailBackupCard() {
       <label className="flex items-center gap-2 cursor-pointer w-fit">
         <Switch checked={cfg.use_tls !== false} onCheckedChange={(v) => set("use_tls", v)} data-testid="email-tls-switch" />
         <span className="text-sm">Use STARTTLS (recommended for port 587; use port 465 for SSL)</span>
+      </label>
+      <label className="flex items-start gap-2 cursor-pointer w-fit">
+        <Switch checked={cfg.notify_users !== false} onCheckedChange={(v) => set("notify_users", v)} className="mt-0.5" data-testid="email-notify-users-switch" />
+        <span className="text-sm">
+          Email users when their account changes
+          <span className="block text-xs text-muted-foreground">New account, password reset, role change, or password changed. Uses these SMTP settings; passwords are never included.</span>
+        </span>
       </label>
       <div className="flex flex-wrap gap-3">
         <Button onClick={save} disabled={saving} className="bg-[#1E293B] hover:bg-[#0F172A]" data-testid="btn-save-email-cfg">

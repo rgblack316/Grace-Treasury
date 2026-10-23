@@ -9,7 +9,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
-import { Landmark, LayoutDashboard, ListOrdered, FileText, PiggyBank, Settings as SettingsIcon, LogOut, Plus, User } from "lucide-react";
+import { Landmark, LayoutDashboard, ListOrdered, FileText, PiggyBank, Settings as SettingsIcon, LogOut, Plus, User, KeyRound, MonitorX } from "lucide-react";
+import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import api from "@/lib/api";
 import TransactionDialog from "@/components/TransactionDialog";
@@ -23,7 +24,16 @@ const tabs = [
 ];
 
 export default function Layout() {
-  const { user, logout, can } = useAuth();
+  const { user, logout, can, signOutEverywhere } = useAuth();
+  const navigate = useNavigate();
+  const signOutOthers = async () => {
+    try {
+      await signOutEverywhere();
+      toast.success("Signed out on all other computers and phones");
+    } catch {
+      toast.error("Could not sign out other devices. Please try again.");
+    }
+  };
   const [quickOpen, setQuickOpen] = useState(false);
   const [churchName, setChurchName] = useState("Church Treasury");
 
@@ -89,6 +99,15 @@ export default function Layout() {
                   <div className="text-xs text-muted-foreground font-normal">{user?.email}</div>
                   <div className="text-xs text-[#D97706] font-normal capitalize mt-0.5">{user?.role === "admin" ? "Treasurer (Admin)" : "User"}</div>
                 </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => navigate("/change-password")} data-testid="change-password-menu">
+                  <KeyRound className="h-4 w-4 mr-2" />
+                  Change password
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={signOutOthers} data-testid="sign-out-others-menu">
+                  <MonitorX className="h-4 w-4 mr-2" />
+                  Sign out other devices
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={logout} data-testid="logout-button">
                   <LogOut className="h-4 w-4 mr-2" />

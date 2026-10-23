@@ -52,6 +52,19 @@ export function AuthProvider({ children }) {
     return data.user;
   };
 
+  // Change your own password; the server signs out other sessions and returns a new token for this one.
+  const changePassword = async (currentPassword, newPassword) => {
+    const { data } = await api.post("/auth/change-password", { current_password: currentPassword, new_password: newPassword });
+    localStorage.setItem("ct_token", data.token);
+    setUser(data.user);
+    return data.user;
+  };
+
+  const signOutEverywhere = async () => {
+    const { data } = await api.post("/auth/sign-out-everywhere");
+    localStorage.setItem("ct_token", data.token);
+  };
+
   const logout = () => {
     localStorage.removeItem("ct_token");
     setUser(false);
@@ -61,7 +74,7 @@ export function AuthProvider({ children }) {
   const can = (perm) => !!user && Array.isArray(user.permissions) && user.permissions.includes(perm);
 
   return (
-    <AuthContext.Provider value={{ user, ready, needsSetup, login, setup, logout, can }}>
+    <AuthContext.Provider value={{ user, ready, needsSetup, login, setup, logout, can, changePassword, signOutEverywhere }}>
       {children}
     </AuthContext.Provider>
   );

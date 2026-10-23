@@ -1,4 +1,12 @@
 import { useState } from "react";
+
+const takeSignoutReason = () => {
+  try {
+    const r = sessionStorage.getItem("ct_signout_reason");
+    sessionStorage.removeItem("ct_signout_reason");
+    return r || "";
+  } catch { return ""; }
+};
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { formatApiErrorDetail } from "@/lib/api";
@@ -13,6 +21,7 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [notice] = useState(takeSignoutReason);
   const [loading, setLoading] = useState(false);
 
   if (ready && needsSetup) {
@@ -101,6 +110,9 @@ export default function Login() {
                 data-testid="login-password-input"
               />
             </div>
+            {notice && !error && (
+              <p className="text-sm text-[#B45309] bg-[#FFFBEB] rounded-md px-3 py-2" data-testid="login-notice">{notice}</p>
+            )}
             {error && (
               <p className="text-sm text-destructive" data-testid="login-error">
                 {error}
