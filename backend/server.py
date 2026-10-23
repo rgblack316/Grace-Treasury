@@ -18,6 +18,8 @@ import json
 import glob
 import asyncio
 import smtplib
+import socket
+import ssl
 from email.message import EmailMessage
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
@@ -2246,6 +2248,49 @@ DEFAULT_EMAIL_SETTINGS = {
 }
 
 
+# Standard mail-submission ports only, so the email settings can't be used to probe other services.
+ALLOWED_SMTP_PORTS = {25, 465, 587, 2525}
+_HOSTNAME_RE = re.compile(r"(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?")
+_IPV4_RE = re.compile(r"\d{1,3}(\.\d{1,3}){3}")
+
+
+def validate_smtp_target(host: str, port: int):
+    if host and not (_HOSTNAME_RE.fullmatch(host) or _IPV4_RE.fullmatch(host)):
+        raise HTTPException(status_code=400, detail="Enter just the mail server's name, e.g. smtp.gmail.com (no http:// or port)")
+    if port not in ALLOWED_SMTP_PORTS:
+        raise HTTPException(status_code=400, detail="Use a standard mail port: 587 (STARTTLS), 465 (SSL), 25 or 2525")
+
+
+class DisallowedSmtpPort(Exception):
+    pass
+
+
+def friendly_smtp_error(e: Exception) -> str:
+    """A helpful message for the admin; the technical details go only to the server log."""
+    logger.warning(f"SMTP error: {type(e).__name__}: {e}")
+    if isinstance(e, DisallowedSmtpPort):
+        return "The saved mail port isn't allowed. Use 587 (STARTTLS), 465 (SSL), 25 or 2525, then save."
+    if isinstance(e, smtplib.SMTPAuthenticationError):
+        return "The mail server rejected the username or password. (For Gmail, use an app password.)"
+    if isinstance(e, smtplib.SMTPRecipientsRefused):
+        return "The mail server refused the recipient address."
+    if isinstance(e, smtplib.SMTPSenderRefused):
+        return "The mail server refused the From address. Many providers require it to match the username."
+    if isinstance(e, smtplib.SMTPNotSupportedError):
+        return "This mail server doesn't support STARTTLS on that port. Use port 465 for SSL, or 587 with STARTTLS."
+    if isinstance(e, ssl.SSLError):
+        return "A secure connection couldn't be set up. Port 465 uses SSL; port 587 uses STARTTLS. Check the port and setting."
+    if isinstance(e, socket.gaierror):
+        return "Couldn't find that mail server. Check the SMTP host name."
+    if isinstance(e, (TimeoutError, socket.timeout)):
+        return "The mail server didn't respond in time. Check the host and port."
+    if isinstance(e, (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected, ConnectionError, OSError)):
+        return "Couldn't connect to the mail server. Check the host and port."
+    if isinstance(e, smtplib.SMTPException):
+        return "The mail server reported an error. The server log has the details."
+    return "The email couldn't be sent. The server log has the details."
+
+
 class EmailConfig(BaseModel):
     enabled: bool = False
     smtp_host: str = ""
@@ -2276,6 +2321,8 @@ def _send_email_sync(cfg: dict, subject: str, body: str, att_name=None, att_byte
         msg.add_attachment(att_bytes, maintype="application", subtype="json", filename=att_name)
     host = cfg.get("smtp_host")
     port = int(cfg.get("smtp_port") or 587)
+    if port not in ALLOWED_SMTP_PORTS:
+        raise DisallowedSmtpPort(f"Port {port} is not an allowed mail port")
     username = cfg.get("smtp_username") or ""
     password = unseal(cfg.get("smtp_password") or "")
     if port == 465:
@@ -2380,6 +2427,7 @@ async def get_email_config(user: dict = Depends(require_data)):
 
 @api_router.put("/settings/email")
 async def update_email_config(data: EmailConfig, request: Request, user: dict = Depends(require_data)):
+    validate_smtp_target(data.smtp_host.strip(), int(data.smtp_port or 587))
     existing = await get_email_settings()
     if (existing.get("notify_users", True) is not False) != data.notify_users:
         await audit(user, "settings.account_notices", None, "Turned on" if data.notify_users else "Turned off", request)
@@ -2396,11 +2444,19 @@ async def update_email_config(data: EmailConfig, request: Request, user: dict = 
         "smtp_password": existing.get("smtp_password", "") if data.smtp_password in (None, "") else seal(data.smtp_password),
     }
     await db.settings.update_one({"id": "email"}, {"$set": doc}, upsert=True)
+    labels = {"enabled": "backup emails", "smtp_host": "host", "smtp_port": "port", "smtp_username": "username",
+              "use_tls": "STARTTLS", "from_address": "from", "to_address": "send to"}
+    changes = [f"{label}: {existing.get(k, '') or '—'} → {doc[k] if doc[k] not in ('', None) else '—'}"
+               for k, label in labels.items() if existing.get(k) != doc[k] and not (k == "smtp_port" and existing.get(k) in (None, "") and doc[k] == 587)]
+    if doc["smtp_password"] != existing.get("smtp_password", ""):
+        changes.append("password changed")
+    if changes:
+        await audit(user, "settings.email_changed", None, "; ".join(changes), request)
     return {"ok": True}
 
 
 @api_router.post("/email/test")
-async def send_test_email(user: dict = Depends(require_data)):
+async def send_test_email(request: Request, user: dict = Depends(require_data)):
     cfg = await get_email_settings()
     if not cfg.get("smtp_host") or not cfg.get("to_address"):
         raise HTTPException(status_code=400, detail="Please set at least an SMTP host and a recipient address, then save.")
@@ -2411,7 +2467,10 @@ async def send_test_email(user: dict = Depends(require_data)):
             "This is a test email from your Grace Treasury app. If you received this, backup emailing is configured correctly.",
         )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not send email: {e}")
+        msg = friendly_smtp_error(e)
+        await audit(user, "email.test", None, f"Failed to {cfg.get('to_address')} via {cfg.get('smtp_host')}:{cfg.get('smtp_port')}: {msg}", request)
+        raise HTTPException(status_code=400, detail=msg)
+    await audit(user, "email.test", None, f"Sent to {cfg.get('to_address')} via {cfg.get('smtp_host')}:{cfg.get('smtp_port')}", request)
     return {"ok": True}
 
 
@@ -2426,7 +2485,7 @@ async def email_backup(name: str, request: Request, user: dict = Depends(require
     try:
         await maybe_email_backup_force(base, full, cfg)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not send email: {e}")
+        raise HTTPException(status_code=400, detail=friendly_smtp_error(e))
     await audit(user, "backup.email", None, f"{base} → {cfg.get('to_address')}", request)
     return {"ok": True}
 

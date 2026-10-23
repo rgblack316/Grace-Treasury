@@ -351,6 +351,8 @@ const AUDIT_LABELS = {
   "role.delete": "Deleted role",
   "login.unlock": "Unlocked sign-in",
   "settings.account_notices": "Account emails setting",
+  "settings.email_changed": "Changed email settings",
+  "email.test": "Sent a test email",
   "backup.passphrase_set": "Set backup passphrase",
   "backup.passphrase_changed": "Changed backup passphrase",
   "backup.run": "Ran a backup",
