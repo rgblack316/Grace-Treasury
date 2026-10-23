@@ -190,9 +190,12 @@ fi
 
 TS="$(date '+%Y-%m-%d_%H-%M-%S')"
 SAFE_DIR="backups/pre-db-auth-$TS"
-if ! mkdir -p "$SAFE_DIR" 2>/dev/null; then
+# Same approach as upgrade.sh: the backend keeps backups/ private to its own user, so if this
+# user can't write there, reclaim it with sudo (the backend takes it back on restart).
+if [ ! -w backups ] 2>/dev/null || ! mkdir -p "$SAFE_DIR" 2>/dev/null; then
+  log "The backups/ folder isn't writable by $(id -un). Fixing ownership..."
   sudo mkdir -p "$SAFE_DIR"
-  sudo chown "$(id -u):$(id -g)" "$SAFE_DIR"
+  sudo chown -R "$(id -u):$(id -g)" backups
 fi
 
 log "Step 1/5: Safety backup of the database and .env..."
