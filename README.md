@@ -173,6 +173,7 @@ Set these in your `.env` file (see `env.example`):
 | `JWT_SECRET` | ✅ | Long random string used to sign login tokens. **Change this.** |
 | `DB_NAME` | ✅ | Database name (default `church_treasury`). |
 | `CORS_ORIGINS` | ✅ | Allowed origin(s) for the frontend, e.g. `http://localhost:8080`. |
+| `TRUSTED_PROXY` | optional | IP or CIDR range that **cloudflared** (or another reverse proxy) connects from. Only requests from here may report the visitor's real IP via `CF-Connecting-IP`. Default `172.16.0.0/12` fits cloudflared running in the same VM as the app. |
 | `BACKUP_DIR` | optional | Folder (inside the backend container) where nightly backups are written. The Compose file mounts `./backups` on your host to `/data/backups`. |
 
 > **Fully offline:** Everything — including receipt images (stored in MongoDB GridFS) — lives in your
@@ -212,6 +213,11 @@ You'll also need MongoDB running locally (`mongodb://localhost:27017`).
 - Passwords must be at least **12 characters** and include **uppercase, lowercase, a number, and a symbol**.
 - Only users with the `users.manage` permission (the Administrator) can add/remove users and roles.
 - Keep your `JWT_SECRET` private and back it up — changing it logs everyone out.
+- **Sign-in protection:** 5 wrong passwords for an email from the same IP locks that email from that IP
+  for 15 minutes; 20 failures from one IP locks the IP. Nginx also limits login requests to about 10 per
+  minute per IP. Administrators can review failed sign-ins and unlock people under **Settings → Security**.
+- If you put the app behind a Cloudflare Tunnel, set `TRUSTED_PROXY` so lockouts use each visitor's real IP
+  (otherwise every visitor appears to come from the tunnel).
 
 ---
 

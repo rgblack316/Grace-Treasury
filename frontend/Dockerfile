@@ -16,7 +16,10 @@ RUN yarn build
 FROM nginx:alpine
 
 COPY --from=build /app/build /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# nginx:alpine renders /etc/nginx/templates/*.template into conf.d at start-up
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+# Proxy whose CF-Connecting-IP header is trusted (cloudflared). Docker's private range by default.
+ENV TRUSTED_PROXY=172.16.0.0/12
 
 EXPOSE 80
 

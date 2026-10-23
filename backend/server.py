@@ -413,6 +413,68 @@ async def shape_user(user: dict):
     }
 
 
+# ----------------------------- Login throttling -----------------------------
+# Failed sign-ins are tracked per (email, IP) and per IP. Locking the email+IP pair
+# (rather than the email alone) stops guessing without letting a stranger lock out
+# a real user from their own computer.
+LOGIN_WINDOW = timedelta(minutes=15)       # failures counted within this window
+LOGIN_LOCK = timedelta(minutes=15)         # lock lasts this long after the last failure
+MAX_FAILS_PER_ACCOUNT_IP = 5
+MAX_FAILS_PER_IP = 20
+LOGIN_HISTORY_DAYS = 30                    # attempts older than this are auto-deleted
+_DUMMY_HASH = bcrypt.hashpw(b"timing-equalizer", bcrypt.gensalt()).decode("utf-8")
+
+
+def _utcnow() -> datetime:
+    # MongoDB returns naive UTC datetimes, so compare in naive UTC.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _naive_utc(dt: datetime) -> datetime:
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
+
+
+def client_ip(request: Request) -> str:
+    """Real visitor IP. nginx sets X-Real-IP (from Cloudflare's CF-Connecting-IP when the
+    request came through the trusted tunnel). The backend is only reachable through nginx."""
+    ip = (request.headers.get("x-real-ip") or "").strip()
+    if not ip and request.client:
+        ip = request.client.host
+    return ip[:64] or "unknown"
+
+
+def _fail_query(**extra) -> dict:
+    return {"success": False, "cleared": {"$ne": True}, **extra}
+
+
+async def login_lock_seconds(email: str, ip: str) -> int:
+    """Seconds until this email+IP (or this IP) may try again; 0 if not locked."""
+    now = _utcnow()
+    since = now - LOGIN_WINDOW
+    until = None
+    pair = await db.login_attempts.find(
+        _fail_query(email=email, ip=ip, at={"$gte": since}), {"_id": 0, "at": 1}
+    ).sort("at", -1).to_list(MAX_FAILS_PER_ACCOUNT_IP)
+    if len(pair) >= MAX_FAILS_PER_ACCOUNT_IP:
+        until = _naive_utc(pair[0]["at"]) + LOGIN_LOCK
+    if await db.login_attempts.count_documents(_fail_query(ip=ip, at={"$gte": since})) >= MAX_FAILS_PER_IP:
+        last = await db.login_attempts.find_one(_fail_query(ip=ip), {"_id": 0, "at": 1}, sort=[("at", -1)])
+        ip_until = _naive_utc(last["at"]) + LOGIN_LOCK
+        until = max(until, ip_until) if until else ip_until
+    if not until or until <= now:
+        return 0
+    return int((until - now).total_seconds()) + 1
+
+
+async def record_login_attempt(email: str, ip: str, success: bool, user_agent: str = ""):
+    await db.login_attempts.insert_one({
+        "email": email, "ip": ip, "success": success, "at": _utcnow(), "user_agent": user_agent[:200],
+    })
+    if success:
+        # a good sign-in resets the counter for this email from this IP
+        await db.login_attempts.update_many(_fail_query(email=email, ip=ip), {"$set": {"cleared": True}})
+
+
 # ----------------------------- Auth routes -----------------------------
 @api_router.get("/auth/setup-status")
 async def setup_status():
@@ -439,9 +501,24 @@ async def setup(data: SetupInput):
 
 
 @api_router.post("/auth/login")
-async def login(data: LoginInput):
-    user = await db.users.find_one({"email": data.email.lower()})
-    if not user or not verify_password(data.password, user["password_hash"]):
+async def login(data: LoginInput, request: Request):
+    email = data.email.lower()
+    ip = client_ip(request)
+    wait = await login_lock_seconds(email, ip)
+    if wait:
+        minutes = max(1, -(-wait // 60))
+        logger.warning(f"Login blocked (locked out): email={email} ip={ip}")
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed sign-in attempts. Please wait {minutes} minute{'s' if minutes != 1 else ''} and try again.",
+            headers={"Retry-After": str(wait)},
+        )
+    user = await db.users.find_one({"email": email})
+    # always run bcrypt so response time doesn't reveal whether the email exists
+    ok = verify_password(data.password, user["password_hash"] if user else _DUMMY_HASH) and bool(user)
+    await record_login_attempt(email, ip, ok, request.headers.get("user-agent", ""))
+    if not ok:
+        logger.warning(f"Failed login: email={email} ip={ip}")
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_access_token(user["id"], user["email"])
     return {"token": token, "user": await shape_user(user)}
@@ -455,6 +532,49 @@ async def me(user: dict = Depends(get_current_user)):
 @api_router.get("/permissions")
 async def list_permissions(user: dict = Depends(require_users)):
     return [{"key": k, "label": PERMISSION_LABELS[k]} for k in ALL_PERMISSIONS]
+
+
+# ----------------------------- Security: sign-in activity (admins) -----------------------------
+class LoginClearInput(BaseModel):
+    email: Optional[str] = None
+    ip: Optional[str] = None
+
+
+@api_router.get("/security/login-attempts")
+async def login_attempts_summary(days: int = Query(7, ge=1, le=LOGIN_HISTORY_DAYS), user: dict = Depends(require_admin)):
+    """Failed sign-ins grouped by email + IP, newest first, with any active lock."""
+    now = _utcnow()
+    since = now - timedelta(days=days)
+    groups: dict = {}
+    async for a in db.login_attempts.find({"success": False, "at": {"$gte": since}}, {"_id": 0}).sort("at", -1):
+        key = (a.get("email", ""), a.get("ip", ""))
+        g = groups.get(key)
+        if not g:
+            g = groups[key] = {"email": key[0], "ip": key[1], "failures": 0, "last_attempt": _naive_utc(a["at"]), "user_agent": a.get("user_agent", "")}
+        g["failures"] += 1
+    out = []
+    for g in groups.values():
+        wait = await login_lock_seconds(g["email"], g["ip"])
+        g["locked_until"] = (now + timedelta(seconds=wait)).replace(tzinfo=timezone.utc).isoformat() if wait else None
+        g["last_attempt"] = g["last_attempt"].replace(tzinfo=timezone.utc).isoformat()
+        out.append(g)
+    out.sort(key=lambda g: g["last_attempt"], reverse=True)
+    return {"days": days, "groups": out[:500]}
+
+
+@api_router.post("/security/login-attempts/clear")
+async def clear_login_lock(data: LoginClearInput, user: dict = Depends(require_admin)):
+    """Unlock an email+IP (or a whole IP) so the person can try again right away."""
+    if not data.email and not data.ip:
+        raise HTTPException(status_code=400, detail="Choose an email or IP address to unlock")
+    q = _fail_query()
+    if data.email:
+        q["email"] = data.email.lower()
+    if data.ip:
+        q["ip"] = data.ip
+    res = await db.login_attempts.update_many(q, {"$set": {"cleared": True}})
+    logger.info(f"Login lock cleared by {user['email']}: email={data.email} ip={data.ip}")
+    return {"ok": True, "cleared": res.modified_count}
 
 
 # ----------------------------- Roles -----------------------------
@@ -1910,6 +2030,9 @@ app.add_middleware(
 # ----------------------------- Seeding -----------------------------
 async def ensure_indexes():
     await db.users.create_index("email", unique=True)
+    await db.login_attempts.create_index("at", expireAfterSeconds=LOGIN_HISTORY_DAYS * 86400)
+    await db.login_attempts.create_index([("email", 1), ("ip", 1), ("at", -1)])
+    await db.login_attempts.create_index([("ip", 1), ("at", -1)])
 
 
 async def seed_starter_data():
