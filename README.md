@@ -26,7 +26,7 @@ installs it starts with a clean, empty database and creates its own administrato
 - **Split across funds** — when recording income or an expense you can divide the amount among several funds
   (e.g. a $1,000 offering: $600 General, $400 Building), with a helper showing the remaining unallocated amount.
   A single fund stays the quick default; splitting is optional.
-- **Income / Expense / Transfer** — record expenses with Check #, Payee, Memo/Reason; record income
+- **Income / Expense / Transfer** — record expenses with Payment Method (Check, Debit Card, ACH, etc.), Check # for checks, Payee, Memo/Reason; record income
   and transfers between accounts. Filter the ledger by account, type, fund, category, **cleared status**,
   or date range, and search by memo or check number. Same-day checks are listed highest-number-first.
 - **Dashboard** — current balance per account and per fund (with roll-ups for nested funds), plus recent activity.

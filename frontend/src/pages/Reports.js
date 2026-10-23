@@ -182,6 +182,7 @@ function ReportView({ report, includeCategory, includeFunds }) {
               <thead>
                 <tr className="text-left text-slate-500 border-b border-[#E5E0D8]">
                   <th className="py-1.5 font-medium">Date</th>
+                  <th className="py-1.5 font-medium">Type</th>
                   <th className="py-1.5 font-medium">Check #</th>
                   <th className="py-1.5 font-medium">Payee</th>
                   <th className="py-1.5 font-medium">Memo / Reason</th>
@@ -190,11 +191,12 @@ function ReportView({ report, includeCategory, includeFunds }) {
               </thead>
               <tbody>
                 {acc.expenses.length === 0 && (
-                  <tr><td colSpan={5} className="py-2 text-slate-400 italic">No expenses</td></tr>
+                  <tr><td colSpan={6} className="py-2 text-slate-400 italic">No expenses</td></tr>
                 )}
                 {acc.expenses.map((e, i) => (
                   <tr key={i} className="border-b border-[#F4F0E8]">
                     <td className="py-1.5 font-mono whitespace-nowrap">{fmtDate(e.date)}</td>
+                    <td className="py-1.5 whitespace-nowrap">{e.transaction_type || "—"}</td>
                     <td className="py-1.5 font-mono">{e.check_number || "—"}</td>
                     <td className="py-1.5">{e.payee || "—"}</td>
                     <td className="py-1.5 text-slate-600">{e.memo || "—"}</td>
@@ -202,7 +204,7 @@ function ReportView({ report, includeCategory, includeFunds }) {
                   </tr>
                 ))}
                 <tr>
-                  <td colSpan={4} className="py-2 text-right font-semibold">Total Expenses</td>
+                  <td colSpan={5} className="py-2 text-right font-semibold">Total Expenses</td>
                   <td className="py-2 text-right font-mono font-bold text-[#B91C1C] print-total border-b-2 border-double border-slate-900">{money(acc.total_expenses)}</td>
                 </tr>
               </tbody>
