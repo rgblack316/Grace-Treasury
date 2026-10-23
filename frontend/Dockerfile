@@ -6,8 +6,9 @@ WORKDIR /app
 ARG REACT_APP_BACKEND_URL=http://localhost:8080
 ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
 
-COPY package.json yarn.lock* ./
-RUN yarn install --frozen-lockfile || yarn install
+# Install exactly the versions in yarn.lock (fails if package.json and yarn.lock disagree).
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile
 
 COPY . .
 # Keep all JavaScript in files (no inline startup script) so the Content Security Policy can forbid inline scripts.

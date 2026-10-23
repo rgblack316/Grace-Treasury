@@ -188,7 +188,7 @@ Set these in your `.env` file (see `env.example`):
 **Backend**
 ```bash
 cd backend
-pip install -r requirements.txt
+pip install -r requirements.txt        # or requirements-dev.txt to also run the tests
 # set MONGO_URL, DB_NAME, JWT_SECRET, CORS_ORIGINS in backend/.env
 uvicorn server:app --host 0.0.0.0 --port 8001
 ```
@@ -282,6 +282,17 @@ church's mail server). Enter the SMTP host/port/username/password, a from and re
 STARTTLS (port 587) or SSL (port 465), and use **Send Test Email** to confirm it works. Nothing leaves
 your server except the email you send through your own provider. Only **encrypted** backups are emailed, so set a backup
 passphrase first.
+
+---
+
+## 🔄 Keeping dependencies current
+
+- `backend/requirements.txt` lists only what the app imports, with exact versions; test tools are in
+  `backend/requirements-dev.txt`.
+- `frontend/yarn.lock` pins every JavaScript package; the Docker build installs exactly those versions.
+- **Dependabot** (`.github/dependabot.yml`) opens weekly pull requests for Python and JavaScript updates
+  and monthly ones for the Docker base images. In GitHub, also turn on **Settings → Code security →
+  Dependabot alerts** and **Dependabot security updates**.
 
 ---
 
