@@ -30,3 +30,8 @@ updates:
     directory: "/frontend"
     schedule:
       interval: "monthly"
+    ignore:
+      # Node 25 was a short-lived non-LTS release (end of life 2026-06-01). Starting with
+      # Node 27, every major release is LTS, so newer majors are still offered.
+      - dependency-name: "node"
+        versions: [">=25, <26"]
