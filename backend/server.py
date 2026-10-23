@@ -733,6 +733,118 @@ async def audit_log(limit: int = Query(200, ge=1, le=1000), user: dict = Depends
     return await db.audit_log.find({}, {"_id": 0}).sort("at", -1).to_list(limit)
 
 
+def _date_ok(v) -> bool:
+    try:
+        check_date(v)
+        return True
+    except HTTPException:
+        return False
+
+
+def _amount_ok(v, allow_negative=False) -> bool:
+    try:
+        check_amount(v, allow_negative=allow_negative)
+        return True
+    except HTTPException:
+        return False
+
+
+@api_router.get("/security/data-check")
+async def data_check(request: Request, user: dict = Depends(require_admin)):
+    """Read-only scan for records that break today's rules (older data, imports, direct edits).
+    Changes nothing."""
+    accounts = {a["id"]: a for a in await db.accounts.find({}, {"_id": 0}).to_list(10000)}
+    cats = {c["id"]: c for c in await db.categories.find({}, {"_id": 0}).to_list(10000)}
+    payees = {p["id"] for p in await db.payees.find({}, {"_id": 0, "id": 1}).to_list(100000)}
+    funds = {f["id"]: f for f in await db.funds.find({}, {"_id": 0}).to_list(10000)}
+    issues = []
+
+    def add(kind, rec, problem):
+        if len(issues) < 1000:
+            acct = accounts.get(rec.get("account_id"), {})
+            issues.append({"kind": kind, "id": rec.get("id"), "date": rec.get("date") or rec.get("opening_date") or "",
+                           "amount": rec.get("amount"), "account": acct.get("mask") or acct.get("name") or "",
+                           "memo": (rec.get("memo") or rec.get("name") or "")[:80], "problem": problem})
+
+    n_txn = 0
+    async for t in db.transactions.find({}, {"_id": 0}):
+        n_txn += 1
+        tt = t.get("type")
+        if tt not in TXN_TYPES:
+            add("transaction", t, f"Unknown type '{tt}' (left out of all balances)")
+        if not _date_ok(t.get("date")):
+            add("transaction", t, f"Invalid date '{t.get('date')}'")
+        if not _amount_ok(t.get("amount")):
+            add("transaction", t, f"Invalid amount '{t.get('amount')}' (must be over $0.00 with 2 decimals)")
+        if t.get("account_id") not in accounts:
+            add("transaction", t, "Bank account no longer exists")
+        if tt == "transfer":
+            if not t.get("to_account_id"):
+                add("transaction", t, "Transfer has no destination account")
+            elif t.get("to_account_id") == t.get("account_id"):
+                add("transaction", t, "Transfer goes to the same account it comes from")
+            elif t.get("to_account_id") not in accounts:
+                add("transaction", t, "Transfer destination account no longer exists")
+        elif tt in ("income", "expense"):
+            if t.get("payee_id") and t["payee_id"] not in payees:
+                add("transaction", t, "Payee no longer exists")
+            if t.get("category_id"):
+                c = cats.get(t["category_id"])
+                if not c:
+                    add("transaction", t, "Category no longer exists")
+                elif c.get("type") != tt:
+                    add("transaction", t, f"Category '{c.get('name')}' is for {c.get('type')}, but this is {tt}")
+            splits = t.get("fund_splits") or []
+            if splits:
+                if any(sp.get("fund_id") not in funds for sp in splits):
+                    add("transaction", t, "A fund in its split no longer exists (that part is missing from fund balances)")
+                try:
+                    if abs(round(sum(float(sp.get("amount") or 0) for sp in splits), 2) - round(float(t.get("amount") or 0), 2)) > 0.01:
+                        add("transaction", t, "Fund split doesn't add up to the transaction amount")
+                except (TypeError, ValueError):
+                    add("transaction", t, "Fund split has an invalid amount")
+            elif t.get("fund_id") and t["fund_id"] not in funds:
+                add("transaction", t, "Fund no longer exists (missing from fund balances)")
+
+    n_act = 0
+    async for a in db.fund_activity.find({}, {"_id": 0}):
+        n_act += 1
+        if not _date_ok(a.get("date")):
+            add("fund activity", a, f"Invalid date '{a.get('date')}'")
+        if a.get("type") == "move":
+            if not _amount_ok(a.get("amount")):
+                add("fund activity", a, "Fund move amount must be over $0.00")
+            if a.get("from_fund_id") not in funds or a.get("to_fund_id") not in funds:
+                add("fund activity", a, "A fund in this move no longer exists")
+        elif a.get("type") == "adjust":
+            if not _amount_ok(a.get("amount"), allow_negative=True):
+                add("fund activity", a, "Adjustment amount is zero or invalid")
+            if a.get("fund_id") not in funds:
+                add("fund activity", a, "The adjusted fund no longer exists")
+        else:
+            add("fund activity", a, f"Unknown fund activity type '{a.get('type')}'")
+
+    for acc in accounts.values():
+        if acc.get("opening_date") and not _date_ok(acc["opening_date"]):
+            add("bank account", acc, f"Invalid opening date '{acc['opening_date']}'")
+    for f in funds.values():
+        if f.get("opening_date") and not _date_ok(f["opening_date"]):
+            add("fund", f, f"Invalid opening date '{f['opening_date']}'")
+        if f.get("parent_id") and f["parent_id"] not in funds:
+            add("fund", f, "Its parent fund no longer exists (shown at top level)")
+    for c in cats.values():
+        if c.get("type") not in ("income", "expense"):
+            add("category", c, f"Unknown category type '{c.get('type')}'")
+
+    summary = {}
+    for i in issues:
+        summary[i["problem"].split(" '")[0]] = summary.get(i["problem"].split(" '")[0], 0) + 1
+    await audit(user, "data.check", None, f"{len(issues)} issue(s) found", request)
+    return {"checked": {"transactions": n_txn, "fund_activity": n_act, "accounts": len(accounts), "funds": len(funds),
+                        "categories": len(cats), "payees": len(payees)},
+            "issue_count": len(issues), "summary": summary, "issues": issues}
+
+
 # ----------------------------- Roles -----------------------------
 @api_router.get("/roles")
 async def list_roles(user: dict = Depends(get_current_user)):
@@ -899,6 +1011,105 @@ async def delete_user(user_id: str, request: Request, user: dict = Depends(requi
 
 
 # ----------------------------- Generic CRUD factory -----------------------------
+# ----------------------------- Validation helpers -----------------------------
+TXN_TYPES = ("income", "expense", "transfer")
+MAX_AMOUNT = 1_000_000_000
+
+
+def check_date(value, label: str = "Date", required: bool = True) -> str:
+    """A real calendar date in YYYY-MM-DD form."""
+    v = (value or "").strip() if isinstance(value, str) else ""
+    if not v:
+        if required:
+            raise HTTPException(status_code=400, detail=f"{label} is required")
+        return ""
+    try:
+        d = datetime.strptime(v, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{label} must be a real date in YYYY-MM-DD form")
+    if not (1900 <= d.year <= 2200):
+        raise HTTPException(status_code=400, detail=f"{label} looks wrong (year {d.year})")
+    return v
+
+
+def check_amount(value, label: str = "Amount", allow_negative: bool = False) -> float:
+    """Greater than zero (or non-zero when negatives are allowed), at most 2 decimal places."""
+    try:
+        amt = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{label} must be a number")
+    if amt != amt or abs(amt) >= MAX_AMOUNT:  # NaN or absurd
+        raise HTTPException(status_code=400, detail=f"{label} is not a valid amount")
+    if allow_negative:
+        if amt == 0:
+            raise HTTPException(status_code=400, detail=f"{label} can't be zero")
+    elif amt <= 0:
+        raise HTTPException(status_code=400, detail=f"{label} must be greater than zero")
+    if abs(round(amt, 2) - amt) > 1e-9:
+        raise HTTPException(status_code=400, detail=f"{label} can have at most 2 decimal places")
+    return round(amt, 2)
+
+
+def check_name(value, label: str = "Name") -> str:
+    v = (value or "").strip()
+    if not v:
+        raise HTTPException(status_code=400, detail=f"{label} is required")
+    if len(v) > 200:
+        raise HTTPException(status_code=400, detail=f"{label} is too long")
+    return v
+
+
+async def require_ref(collection: str, item_id: Optional[str], label: str) -> Optional[dict]:
+    if not item_id:
+        return None
+    doc = await db[collection].find_one({"id": item_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=400, detail=f"That {label} doesn't exist (it may have been deleted)")
+    return doc
+
+
+# How each kind of item is referenced, for refusing deletes of things still in use.
+USAGE_QUERIES = {
+    "accounts": lambda i: [("transactions", {"$or": [{"account_id": i}, {"to_account_id": i}]})],
+    "categories": lambda i: [("transactions", {"category_id": i})],
+    "payees": lambda i: [("transactions", {"payee_id": i})],
+    "funds": lambda i: [("transactions", {"$or": [{"fund_id": i}, {"fund_splits.fund_id": i}]}),
+                        ("fund_activity", {"$or": [{"fund_id": i}, {"from_fund_id": i}, {"to_fund_id": i}]})],
+}
+USAGE_LABELS = {"accounts": "bank account", "categories": "category", "payees": "payee", "funds": "fund"}
+
+
+async def ensure_not_in_use(collection: str, item_id: str):
+    txns = acts = 0
+    for coll, q in USAGE_QUERIES[collection](item_id):
+        n = await db[coll].count_documents(q)
+        if coll == "transactions":
+            txns += n
+        else:
+            acts += n
+    if txns or acts:
+        parts = []
+        if txns:
+            parts.append(f"{txns} transaction{'s' if txns != 1 else ''}")
+        if acts:
+            parts.append(f"{acts} fund move{'s' if acts != 1 else ''}/adjustment{'s' if acts != 1 else ''}")
+        raise HTTPException(status_code=409, detail=f"This {USAGE_LABELS[collection]} is used by {' and '.join(parts)}, "
+                                                    "so it can't be deleted. Mark it inactive instead to hide it from new entries.")
+
+
+async def validate_item(collection: str, doc: dict, item_id: Optional[str] = None) -> dict:
+    doc["name"] = check_name(doc.get("name"))
+    if collection == "categories" and doc.get("type") not in ("income", "expense"):
+        raise HTTPException(status_code=400, detail="Category type must be income or expense")
+    if collection in ("accounts", "funds"):
+        doc["opening_date"] = check_date(doc.get("opening_date"), "Opening date", required=False)
+        try:
+            doc["opening_balance"] = round(float(doc.get("opening_balance") or 0), 2)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Opening balance must be a number")
+    return doc
+
+
 def register_crud(path: str, collection: str, model):
     @api_router.get(f"/{path}")
     async def list_items(user: dict = Depends(get_current_user), _coll=collection):
@@ -907,7 +1118,7 @@ def register_crud(path: str, collection: str, model):
 
     @api_router.post(f"/{path}")
     async def create_item(data: model, user: dict = Depends(require_settings), _coll=collection):
-        doc = data.model_dump()
+        doc = await validate_item(_coll, data.model_dump())
         doc["id"] = new_id()
         doc["created_at"] = now_iso()
         await db[_coll].insert_one(doc)
@@ -918,12 +1129,13 @@ def register_crud(path: str, collection: str, model):
         existing = await db[_coll].find_one({"id": item_id})
         if not existing:
             raise HTTPException(status_code=404, detail="Not found")
-        await db[_coll].update_one({"id": item_id}, {"$set": data.model_dump()})
+        await db[_coll].update_one({"id": item_id}, {"$set": await validate_item(_coll, data.model_dump(), item_id)})
         updated = await db[_coll].find_one({"id": item_id}, {"_id": 0})
         return updated
 
     @api_router.delete(f"/{path}/{{item_id}}")
     async def delete_item(item_id: str, user: dict = Depends(require_settings), _coll=collection):
+        await ensure_not_in_use(_coll, item_id)
         await db[_coll].delete_one({"id": item_id})
         return {"ok": True}
 
@@ -963,7 +1175,7 @@ async def list_funds(user: dict = Depends(get_current_user)):
 @api_router.post("/funds")
 async def create_fund(data: FundInput, user: dict = Depends(require_settings)):
     await validate_fund_parent(data.parent_id, None)
-    doc = data.model_dump()
+    doc = await validate_item("funds", data.model_dump())
     doc["id"] = new_id()
     doc["created_at"] = now_iso()
     await db.funds.insert_one(doc)
@@ -976,12 +1188,13 @@ async def update_fund(fund_id: str, data: FundInput, user: dict = Depends(requir
     if not existing:
         raise HTTPException(status_code=404, detail="Fund not found")
     await validate_fund_parent(data.parent_id, fund_id)
-    await db.funds.update_one({"id": fund_id}, {"$set": data.model_dump()})
+    await db.funds.update_one({"id": fund_id}, {"$set": await validate_item("funds", data.model_dump(), fund_id)})
     return await db.funds.find_one({"id": fund_id}, {"_id": 0})
 
 
 @api_router.delete("/funds/{fund_id}")
 async def delete_fund(fund_id: str, user: dict = Depends(require_settings)):
+    await ensure_not_in_use("funds", fund_id)
     f = await db.funds.find_one({"id": fund_id}, {"_id": 0})
     if f:
         # keep any children in the tree by re-parenting them to this fund's parent
@@ -1018,6 +1231,7 @@ async def list_transactions(
     if cleared is not None:
         query["cleared"] = cleared
     if start or end:
+        check_date(start, "Start date", required=False); check_date(end, "End date", required=False)
         drange = {}
         if start:
             drange["$gte"] = start
@@ -1081,19 +1295,53 @@ def validate_fund_allocation(data: TransactionInput):
     if data.type == "transfer" or not data.fund_splits:
         return
     for s in data.fund_splits:
-        if s.amount <= 0:
-            raise HTTPException(status_code=400, detail="Each fund split must be greater than zero")
+        check_amount(s.amount, "Each fund split")
+    if len({s.fund_id for s in data.fund_splits}) != len(data.fund_splits):
+        raise HTTPException(status_code=400, detail="Each fund can only appear once in a split")
     total = round(sum(s.amount for s in data.fund_splits), 2)
     if abs(total - round(data.amount, 2)) > 0.01:
         raise HTTPException(status_code=400, detail="Fund splits must add up to the transaction amount")
 
 
-@api_router.post("/transactions")
-async def create_transaction(data: TransactionInput, user: dict = Depends(require_txn_manage)):
-    if data.type == "transfer" and not data.to_account_id:
-        raise HTTPException(status_code=400, detail="Transfer requires a destination account")
+async def validate_transaction(data: TransactionInput) -> dict:
+    """All the rules a transaction must meet, whoever sends it. Returns the document to save."""
+    if data.type not in TXN_TYPES:
+        raise HTTPException(status_code=400, detail="Type must be income, expense or transfer")
+    check_date(data.date)
+    data.amount = check_amount(data.amount)
+    if not data.account_id:
+        raise HTTPException(status_code=400, detail="Choose a bank account")
+    await require_ref("accounts", data.account_id, "bank account")
+    if data.type == "transfer":
+        if not data.to_account_id:
+            raise HTTPException(status_code=400, detail="A transfer needs a destination account")
+        if data.to_account_id == data.account_id:
+            raise HTTPException(status_code=400, detail="A transfer must go to a different account")
+        await require_ref("accounts", data.to_account_id, "destination account")
+        # transfers don't carry payee, category or fund
+        data.payee_id = data.category_id = data.fund_id = None
+        data.fund_splits = None
+    else:
+        data.to_account_id = None
+        await require_ref("payees", data.payee_id, "payee")
+        cat = await require_ref("categories", data.category_id, "category")
+        if cat and cat.get("type") != data.type:
+            raise HTTPException(status_code=400, detail=f"That category is for {cat.get('type')}, not {data.type}")
+        if data.fund_splits:
+            data.fund_id = None
+            for sp in data.fund_splits:
+                await require_ref("funds", sp.fund_id, "fund")
+        else:
+            await require_ref("funds", data.fund_id, "fund")
     validate_fund_allocation(data)
     doc = normalize_txn_payment(data)
+    doc["memo"] = (doc.get("memo") or "")[:1000]
+    return doc
+
+
+@api_router.post("/transactions")
+async def create_transaction(data: TransactionInput, user: dict = Depends(require_txn_manage)):
+    doc = await validate_transaction(data)
     doc["id"] = new_id()
     doc["created_at"] = now_iso()
     doc["created_by"] = user["id"]
@@ -1106,8 +1354,9 @@ async def update_transaction(txn_id: str, data: TransactionInput, user: dict = D
     existing = await db.transactions.find_one({"id": txn_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    validate_fund_allocation(data)
-    await db.transactions.update_one({"id": txn_id}, {"$set": normalize_txn_payment(data)})
+    doc = await validate_transaction(data)
+    doc["updated_at"] = now_iso()
+    await db.transactions.update_one({"id": txn_id}, {"$set": doc})
     updated = await db.transactions.find_one({"id": txn_id}, {"_id": 0})
     return updated
 
@@ -1507,19 +1756,24 @@ async def list_fund_activity(user: dict = Depends(require_txn_view)):
 async def create_fund_activity(data: FundActivityInput, user: dict = Depends(require_txn_manage)):
     if data.type not in ("move", "adjust"):
         raise HTTPException(status_code=400, detail="Invalid fund activity type")
+    check_date(data.date)
     if data.type == "move":
         if not data.from_fund_id or not data.to_fund_id:
             raise HTTPException(status_code=400, detail="Choose both a source and a destination fund")
         if data.from_fund_id == data.to_fund_id:
             raise HTTPException(status_code=400, detail="Source and destination funds must differ")
-        if data.amount <= 0:
-            raise HTTPException(status_code=400, detail="Enter an amount greater than zero")
+        data.amount = check_amount(data.amount, "Amount")
+        await require_ref("funds", data.from_fund_id, "source fund")
+        await require_ref("funds", data.to_fund_id, "destination fund")
+        data.fund_id = None
     else:  # adjust
         if not data.fund_id:
             raise HTTPException(status_code=400, detail="Choose a fund to adjust")
-        if data.amount == 0:
-            raise HTTPException(status_code=400, detail="Enter a non-zero amount")
+        data.amount = check_amount(data.amount, "The adjustment", allow_negative=True)
+        await require_ref("funds", data.fund_id, "fund")
+        data.from_fund_id = data.to_fund_id = None
     doc = data.model_dump()
+    doc["memo"] = (doc.get("memo") or "")[:1000]
     doc["id"] = new_id()
     doc["created_at"] = now_iso()
     doc["created_by"] = user["id"]
@@ -1672,6 +1926,9 @@ async def treasurer_report(
     account_ids: str = Query(...),
     user: dict = Depends(require_reports),
 ):
+    check_date(start, "Start date"); check_date(end, "End date")
+    if start > end:
+        raise HTTPException(status_code=400, detail="The start date must be on or before the end date")
     ids = [i for i in account_ids.split(",") if i]
     return await build_report(start, end, ids)
 
@@ -1697,6 +1954,9 @@ async def treasurer_report_pdf(
     include_funds: bool = Query(False),
     user: dict = Depends(require_reports),
 ):
+    check_date(start, "Start date"); check_date(end, "End date")
+    if start > end:
+        raise HTTPException(status_code=400, detail="The start date must be on or before the end date")
     ids = [i for i in account_ids.split(",") if i]
     report = await build_report(start, end, ids)
 
