@@ -21,7 +21,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, Pencil, Trash2, Save, Download, Upload, ShieldCheck, Loader2, AlertTriangle, Mail, Send } from "lucide-react";
+import { Plus, Pencil, Trash2, Save, Download, Upload, ShieldCheck, Loader2, AlertTriangle, Mail, Send, Lock, Unlock, RefreshCw } from "lucide-react";
 
 const PW_HINT = "At least 12 characters with uppercase, lowercase, a number, and a symbol.";
 const strongPw = (p) => p.length >= 12 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /\d/.test(p) && /[^A-Za-z0-9]/.test(p);
@@ -31,11 +31,13 @@ export default function Settings() {
   const canSettings = can("settings.manage");
   const canUsers = can("users.manage");
   const canData = can("data.manage");
+  const isAdmin = user?.role === "admin";
 
   const available = [];
   if (canSettings) available.push("accounts", "funds", "categories", "payees", "church");
   if (canUsers) available.push("roles", "users");
   if (canData) available.push("backup");
+  if (isAdmin) available.push("security");
   const first = available[0] || "none";
 
   return (
@@ -58,6 +60,7 @@ export default function Settings() {
             {canUsers && <TabsTrigger value="roles" data-testid="settings-tab-roles">Roles</TabsTrigger>}
             {canUsers && <TabsTrigger value="users" data-testid="settings-tab-users">Users</TabsTrigger>}
             {canData && <TabsTrigger value="backup" data-testid="settings-tab-backup">Backup & Restore</TabsTrigger>}
+            {isAdmin && <TabsTrigger value="security" data-testid="settings-tab-security">Security</TabsTrigger>}
           </TabsList>
 
           {canSettings && <TabsContent value="accounts"><AccountsTab /></TabsContent>}
@@ -68,6 +71,7 @@ export default function Settings() {
           {canUsers && <TabsContent value="roles"><RolesTab /></TabsContent>}
           {canUsers && <TabsContent value="users"><UsersTab me={user} /></TabsContent>}
           {canData && <TabsContent value="backup"><BackupTab /></TabsContent>}
+          {isAdmin && <TabsContent value="security"><SecurityTab /></TabsContent>}
         </Tabs>
       )}
     </div>
@@ -328,6 +332,101 @@ function RolesTab() {
           <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={doDelete} className="bg-destructive hover:bg-destructive/90" data-testid="confirm-delete-role">Delete</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </Card>
+  );
+}
+
+function SecurityTab() {
+  const [days, setDays] = useState("7");
+  const [groups, setGroups] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const load = () => {
+    setLoading(true);
+    api.get(`/security/login-attempts?days=${days}`)
+      .then((r) => setGroups(r.data.groups))
+      .catch((e) => toast.error(formatApiErrorDetail(e.response?.data?.detail)))
+      .finally(() => setLoading(false));
+  };
+  useEffect(load, [days]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const unlock = async (body, label) => {
+    try {
+      await api.post("/security/login-attempts/clear", body);
+      toast.success(`Unlocked ${label}`);
+      load();
+    } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
+  };
+  const when = (iso) => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const time = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const lockedCount = groups.filter((g) => g.locked_until).length;
+
+  return (
+    <Card className="p-5 mt-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <h3 className="font-serif text-lg font-semibold text-slate-900">Failed Sign-ins</h3>
+          <p className="text-sm text-muted-foreground">
+            After 5 wrong passwords from the same computer, that email is locked from there for 15 minutes.
+            20 failures from one IP address locks that address. Unlock someone here if they're stuck.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Select value={days} onValueChange={setDays}>
+            <SelectTrigger className="w-36" data-testid="security-days"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1">Last 24 hours</SelectItem>
+              <SelectItem value="7">Last 7 days</SelectItem>
+              <SelectItem value="30">Last 30 days</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="icon" onClick={load} title="Refresh" data-testid="security-refresh"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /></Button>
+        </div>
+      </div>
+      {lockedCount > 0 && (
+        <div className="mb-3 flex items-center gap-2 rounded-lg bg-[#FEF2F2] text-[#B91C1C] px-3 py-2 text-sm">
+          <Lock className="h-4 w-4" /> {lockedCount} sign-in{lockedCount === 1 ? " is" : "s are"} locked right now.
+        </div>
+      )}
+      <div className="overflow-x-auto border-t border-[#EEEDE7]">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-slate-500 border-b border-[#EEEDE7]">
+              <th className="py-2 font-medium">Email tried</th>
+              <th className="py-2 font-medium">IP address</th>
+              <th className="py-2 pr-3 font-medium text-right">Failures</th>
+              <th className="py-2 pl-2 font-medium">Last attempt</th>
+              <th className="py-2 font-medium">Status</th>
+              <th className="py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {!loading && groups.length === 0 && (
+              <tr><td colSpan={6} className="py-6 text-center text-muted-foreground">No failed sign-ins in this period.</td></tr>
+            )}
+            {groups.map((g) => (
+              <tr key={`${g.email}|${g.ip}`} className="border-b border-[#F4F0E8]" data-testid={`security-row-${g.email}-${g.ip}`}>
+                <td className="py-2 pr-3 break-all">{g.email}</td>
+                <td className="py-2 pr-3 font-mono text-xs whitespace-nowrap" title={g.user_agent}>{g.ip}</td>
+                <td className="py-2 pr-3 text-right font-mono">{g.failures}</td>
+                <td className="py-2 pl-2 pr-3 whitespace-nowrap">{when(g.last_attempt)}</td>
+                <td className="py-2 pr-3 whitespace-nowrap">
+                  {g.locked_until
+                    ? <Badge variant="outline" className="bg-[#FEF2F2] text-[#B91C1C] border-[#FECACA]">Locked until {time(g.locked_until)}</Badge>
+                    : <span className="text-muted-foreground">—</span>}
+                </td>
+                <td className="py-2 text-right whitespace-nowrap">
+                  {g.locked_until && (
+                    <>
+                      <Button variant="ghost" size="sm" onClick={() => unlock({ email: g.email, ip: g.ip }, g.email)} data-testid={`btn-unlock-${g.email}-${g.ip}`}><Unlock className="h-4 w-4 mr-1" />Unlock</Button>
+                      <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => unlock({ ip: g.ip }, g.ip)} title="Clear all failures from this IP address">Unlock IP</Button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Card>
   );
 }

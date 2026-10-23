@@ -27,7 +27,12 @@ export default function Login() {
       await login(email.trim().toLowerCase(), password);
       navigate("/");
     } catch (err) {
-      setError(formatApiErrorDetail(err.response?.data?.detail) || err.message);
+      const detail = err.response?.data?.detail;
+      if (err.response?.status === 429 && !detail) {
+        setError("Too many sign-in attempts. Please wait a minute and try again.");
+      } else {
+        setError(formatApiErrorDetail(detail) || err.message);
+      }
     } finally {
       setLoading(false);
     }

@@ -32,6 +32,9 @@ services:
         # so the public URL is the frontend origin itself.
         REACT_APP_BACKEND_URL: ${CORS_ORIGINS:-http://localhost:8080}
     restart: unless-stopped
+    environment:
+      # Where cloudflared connects from. Its CF-Connecting-IP header is trusted only from here.
+      - TRUSTED_PROXY=${TRUSTED_PROXY:-172.16.0.0/12}
     depends_on:
       - backend
     ports:
