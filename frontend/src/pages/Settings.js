@@ -351,6 +351,14 @@ const AUDIT_LABELS = {
   "role.delete": "Deleted role",
   "login.unlock": "Unlocked sign-in",
   "settings.account_notices": "Account emails setting",
+  "backup.passphrase_set": "Set backup passphrase",
+  "backup.passphrase_changed": "Changed backup passphrase",
+  "backup.run": "Ran a backup",
+  "backup.download": "Downloaded a backup",
+  "backup.delete": "Deleted a backup",
+  "backup.email": "Emailed a backup",
+  "data.export": "Downloaded a backup",
+  "data.restore": "Restored from backup",
 };
 
 function AuditLog() {
@@ -631,7 +639,7 @@ function EmailBackupCard() {
     <Card className="p-5 space-y-4">
       <div className="flex items-center justify-between">
         <div><h3 className="font-serif text-lg font-semibold text-slate-900 flex items-center gap-2"><Mail className="h-5 w-5 text-[#B45309]" />Email Backups</h3>
-          <p className="text-sm text-muted-foreground">Automatically email each nightly backup to the treasurer for off-site safekeeping, using your own email (SMTP) account.</p></div>
+          <p className="text-sm text-muted-foreground">Automatically email each nightly backup to the treasurer for off-site safekeeping, using your own email (SMTP) account. Only encrypted backups are emailed.</p></div>
         <label className="flex items-center gap-2 cursor-pointer">
           <span className="text-sm text-muted-foreground">Enabled</span>
           <Switch checked={!!cfg.enabled} onCheckedChange={(v) => set("enabled", v)} data-testid="email-enabled-switch" />
@@ -668,6 +676,78 @@ function EmailBackupCard() {
   );
 }
 
+function BackupEncryptionCard({ status, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ pass: "", confirm: "", saved: false });
+  const [saving, setSaving] = useState(false);
+  const enabled = !!status?.enabled;
+
+  const save = async () => {
+    if (form.pass.length < 12) return toast.error("Use at least 12 characters — a few unrelated words works well");
+    if (form.pass !== form.confirm) return toast.error("The passphrases don't match");
+    if (!form.saved) return toast.error("Please confirm you've written the passphrase down somewhere safe");
+    setSaving(true);
+    try {
+      const { data } = await api.put("/settings/backup-encryption", { passphrase: form.pass });
+      onChange(data);
+      setOpen(false); setForm({ pass: "", confirm: "", saved: false });
+      toast.success(enabled ? "Backup passphrase changed" : "Backups will now be encrypted");
+    } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Card className={`p-5 space-y-3 ${enabled ? "" : "border-[#FCA5A5]"}`} data-testid="backup-encryption-card">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="font-serif text-lg font-semibold text-slate-900 flex items-center gap-2"><Lock className="h-5 w-5 text-[#B45309]" />Backup Encryption</h3>
+          <p className="text-sm text-muted-foreground max-w-2xl">
+            Encrypts every backup — nightly, downloaded and emailed — with a passphrase only you know. Restoring an encrypted backup asks for it.
+          </p>
+        </div>
+        {enabled
+          ? <Badge variant="outline" className="bg-[#F0FDF4] text-[#15803D] border-[#BBF7D0]" data-testid="backup-encryption-on"><Lock className="h-3.5 w-3.5 mr-1" />On{status.set_at ? ` · set ${new Date(status.set_at).toLocaleDateString()}` : ""}</Badge>
+          : <Badge variant="outline" className="bg-[#FEF2F2] text-[#B91C1C] border-[#FECACA]" data-testid="backup-encryption-off">Off</Badge>}
+      </div>
+      {!enabled && (
+        <div className="flex items-start gap-2 text-sm text-[#B91C1C] bg-[#FEF2F2] rounded-lg p-3">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+          <span>Backups are <b>not encrypted</b> and contain all financial data and password hashes. Emailing backups is paused until you set a passphrase.</span>
+        </div>
+      )}
+      {!open ? (
+        <Button onClick={() => setOpen(true)} className="bg-[#1E293B] hover:bg-[#0F172A]" data-testid="btn-set-passphrase">
+          <Lock className="h-4 w-4 mr-2" />{enabled ? "Change Passphrase" : "Set Backup Passphrase"}
+        </Button>
+      ) : (
+        <div className="space-y-3 rounded-lg border border-[#E5E0D8] bg-[#FAF8F3] p-4 max-w-xl">
+          <div className="flex items-start gap-2 text-xs text-[#B45309]">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span><b>If this passphrase is lost, encrypted backups cannot be opened by anyone.</b> Write it down and keep it somewhere safe away from this server (for example, with the church's important papers).{enabled && " Backups made before a change still need the passphrase that was in use when they were made."}</span>
+          </div>
+          <div className="space-y-1.5"><Label>Passphrase</Label><Input type="password" autoComplete="new-password" value={form.pass} onChange={(e) => setForm({ ...form, pass: e.target.value })} placeholder="e.g. four unrelated words" data-testid="passphrase-input" /></div>
+          <div className="space-y-1.5"><Label>Confirm passphrase</Label><Input type="password" autoComplete="new-password" value={form.confirm} onChange={(e) => setForm({ ...form, confirm: e.target.value })} data-testid="passphrase-confirm-input" /></div>
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <Checkbox checked={form.saved} onCheckedChange={(v) => setForm({ ...form, saved: !!v })} data-testid="passphrase-saved-check" />
+            I've written this passphrase down somewhere safe
+          </label>
+          <div className="flex gap-2">
+            <Button onClick={save} disabled={saving} className="bg-[#1E293B] hover:bg-[#0F172A]" data-testid="btn-save-passphrase">
+              {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}Save Passphrase
+            </Button>
+            <Button variant="outline" onClick={() => { setOpen(false); setForm({ pass: "", confirm: "", saved: false }); }}>Cancel</Button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+const filenameFrom = (res, fallback) => {
+  const m = /filename=([^;]+)/i.exec(res.headers?.["content-disposition"] || "");
+  return m ? m[1].trim().replace(/"/g, "") : fallback;
+};
+
 function BackupTab() {
   const [exporting, setExporting] = useState(false);
   const [file, setFile] = useState(null);
@@ -678,10 +758,15 @@ function BackupTab() {
   const [backups, setBackups] = useState([]);
   const [running, setRunning] = useState(false);
   const [restoreName, setRestoreName] = useState(null);
+  const [encStatus, setEncStatus] = useState(null);
+  const [filePass, setFilePass] = useState("");
+  const [restorePass, setRestorePass] = useState("");
+  const restoreEncrypted = !!restoreName && restoreName.endsWith("-enc.json");
 
   const loadBackups = () => api.get("/backups").then((r) => setBackups(r.data)).catch(() => {});
   useEffect(() => {
     api.get("/settings/backup").then((r) => setCfg(r.data)).catch(() => {});
+    api.get("/settings/backup-encryption").then((r) => setEncStatus(r.data)).catch(() => {});
     loadBackups();
   }, []);
 
@@ -691,7 +776,7 @@ function BackupTab() {
       const res = await api.get("/data/export", { responseType: "blob" });
       const url = window.URL.createObjectURL(new Blob([res.data], { type: "application/json" }));
       const a = document.createElement("a");
-      a.href = url; a.download = `church-treasury-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+      a.href = url; a.download = filenameFrom(res, `church-treasury-backup-${new Date().toISOString().slice(0, 10)}.json`); a.click();
       window.URL.revokeObjectURL(url);
       toast.success("Backup downloaded");
     } catch { toast.error("Could not export backup"); }
@@ -703,6 +788,7 @@ function BackupTab() {
     setImporting(true); setConfirmOpen(false);
     try {
       const fd = new FormData(); fd.append("file", file);
+      if (filePass) fd.append("passphrase", filePass);
       await api.post("/data/import", fd, { headers: { "Content-Type": "multipart/form-data" } });
       toast.success("Backup restored. Please sign in again.");
       setTimeout(() => { localStorage.removeItem("ct_token"); window.location.href = "/login"; }, 1500);
@@ -722,7 +808,11 @@ function BackupTab() {
 
   const runNow = async () => {
     setRunning(true);
-    try { await api.post("/backups/run"); toast.success("Backup created"); loadBackups(); }
+    try {
+      const { data } = await api.post("/backups/run");
+      if (data.encrypted) toast.success("Encrypted backup created"); else toast.warning("Backup created, but it is NOT encrypted — set a backup passphrase");
+      loadBackups();
+    }
     catch { toast.error("Could not create backup"); }
     finally { setRunning(false); }
   };
@@ -742,9 +832,10 @@ function BackupTab() {
   };
 
   const doRestoreServer = async () => {
-    const name = restoreName; setRestoreName(null);
+    const name = restoreName; const passphrase = restorePass;
+    setRestoreName(null); setRestorePass("");
     try {
-      await api.post(`/backups/${name}/restore`);
+      await api.post(`/backups/${name}/restore`, passphrase ? { passphrase } : {});
       toast.success("Restored. Please sign in again.");
       setTimeout(() => { localStorage.removeItem("ct_token"); window.location.href = "/login"; }, 1500);
     } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
@@ -754,10 +845,11 @@ function BackupTab() {
 
   return (
     <div className="mt-4 space-y-5">
+      {encStatus && <BackupEncryptionCard status={encStatus} onChange={setEncStatus} />}
       <div className="grid gap-5 md:grid-cols-2">
         <Card className="p-5 space-y-3">
           <h3 className="font-serif text-lg font-semibold text-slate-900">Export (Backup)</h3>
-          <p className="text-sm text-muted-foreground">Download a complete JSON backup of all accounts, transactions, users, roles, and settings.</p>
+          <p className="text-sm text-muted-foreground">Download a complete backup of all accounts, transactions, users, roles, and settings{encStatus?.enabled ? ", encrypted with your backup passphrase" : ""}. The email (SMTP) password is never included.</p>
           <Button onClick={doExport} disabled={exporting} className="bg-[#1E293B] hover:bg-[#0F172A]" data-testid="btn-export-data">
             {exporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}Download Backup
           </Button>
@@ -773,6 +865,10 @@ function BackupTab() {
             <Upload className="h-4 w-4" /> {file ? file.name : "Choose a backup file (.json)"}
             <input type="file" accept=".json,application/json" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} data-testid="import-data-input" />
           </label>
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Backup passphrase (only if the file is encrypted)</Label>
+            <Input type="password" autoComplete="off" value={filePass} onChange={(e) => setFilePass(e.target.value)} data-testid="import-passphrase-input" />
+          </div>
           <Button onClick={() => setConfirmOpen(true)} disabled={!file || importing} variant="destructive" data-testid="btn-restore-data">
             {importing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}Restore from File
           </Button>
@@ -811,7 +907,12 @@ function BackupTab() {
           {backups.map((b) => (
             <div key={b.name} className="flex items-center justify-between py-3 gap-3" data-testid={`backup-row-${b.name}`}>
               <div className="min-w-0">
-                <div className="font-mono text-sm text-slate-800 truncate">{b.name}</div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="font-mono text-sm text-slate-800 truncate">{b.name}</span>
+                  {b.encrypted
+                    ? <Badge variant="outline" className="shrink-0 bg-[#F0FDF4] text-[#15803D] border-[#BBF7D0]"><Lock className="h-3 w-3 mr-1" />Encrypted</Badge>
+                    : <Badge variant="outline" className="shrink-0 bg-[#FEF2F2] text-[#B91C1C] border-[#FECACA]">Not encrypted</Badge>}
+                </div>
                 <div className="text-xs text-muted-foreground">{new Date(b.created_at).toLocaleString()} · {fmtSize(b.size)}</div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
@@ -832,10 +933,16 @@ function BackupTab() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={!!restoreName} onOpenChange={(o) => !o && setRestoreName(null)}>
+      <AlertDialog open={!!restoreName} onOpenChange={(o) => { if (!o) { setRestoreName(null); setRestorePass(""); } }}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>Restore this backup?</AlertDialogTitle>
-            <AlertDialogDescription>This replaces all current data with <span className="font-mono text-xs">{restoreName}</span> and signs you out.</AlertDialogDescription></AlertDialogHeader>
+            <AlertDialogDescription>This replaces all current data with <span className="font-mono text-xs">{restoreName}</span> and signs everyone out.</AlertDialogDescription></AlertDialogHeader>
+          {restoreEncrypted && (
+            <div className="space-y-1.5">
+              <Label>Backup passphrase</Label>
+              <Input type="password" autoComplete="off" value={restorePass} onChange={(e) => setRestorePass(e.target.value)} placeholder="The passphrase in use when this backup was made" data-testid="restore-passphrase-input" />
+            </div>
+          )}
           <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={doRestoreServer} className="bg-destructive hover:bg-destructive/90" data-testid="confirm-restore-server">Yes, restore</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -120,9 +120,9 @@ echo "GitHub has $BEHIND new commit(s)."
 # Back up the database before changing application code
 # ------------------------------------------------------------
 
-# The Docker containers run as root and write nightly backups into ./backups,
-# which can leave that folder owned by root. If so, reclaim it for the current
-# user (root can still write there afterwards) so this backup can be created.
+# The backend writes nightly backups into ./backups as its own user (UID 1000) and keeps
+# the folder private. If this user can't write there, reclaim it with sudo so this backup
+# can be created; the backend takes the folder back when it restarts.
 if [ ! -w "$BACKUP_DIR" ] 2>/dev/null || ! mkdir -p "$DB_BACKUP_DIR" 2>/dev/null; then
   log "The backups/ folder is not writable by $(id -un) (likely created by Docker as root). Fixing ownership..."
   sudo mkdir -p "$DB_BACKUP_DIR"
@@ -158,6 +158,9 @@ fi
 
 # Back up .env separately as an additional safety measure.
 cp -p .env "$DB_BACKUP_DIR/.env"
+# The dump and .env copy hold everything (incl. secrets): readable by the owner only.
+chmod 700 "$DB_BACKUP_DIR"
+chmod 600 "$DB_BACKUP_DIR"/* 2>/dev/null || true
 
 # ------------------------------------------------------------
 # Fast-forward only
