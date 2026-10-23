@@ -47,6 +47,14 @@ from reportlab.platypus import (
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
 mongo_url = os.environ['MONGO_URL']
+# When MongoDB requires a login (see enable-db-auth.sh), the app signs in with its own
+# limited account. Without these variables it connects exactly as before.
+_mongo_user = os.environ.get("MONGO_USERNAME", "").strip()
+_mongo_pass = os.environ.get("MONGO_PASSWORD", "")
+_mongo_auth = ({"username": _mongo_user, "password": _mongo_pass,
+                "authSource": os.environ.get("MONGO_AUTH_SOURCE", "admin")}
+               if _mongo_user and _mongo_pass else {})
+
 # The MongoDB client is created in connect_db() during app startup, not here at import time:
 # Motor ties itself to the event loop that exists when the client is created, and Uvicorn
 # runs the app on its own new loop. Creating it at import time crashes startup with
@@ -59,7 +67,7 @@ fs_bucket = None
 def connect_db():
     """Create the MongoDB client, database handle and receipt store on the running loop."""
     global client, db, fs_bucket
-    client = AsyncIOMotorClient(mongo_url)
+    client = AsyncIOMotorClient(mongo_url, **_mongo_auth)
     db = client[os.environ['DB_NAME']]
     fs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="receipts")
 

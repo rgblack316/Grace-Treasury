@@ -208,7 +208,20 @@ if [ ! -f .env ]; then
   # safe default for a first-run installation; change it for a remote server.
   sed -i 's|^CORS_ORIGINS=.*|CORS_ORIGINS=http://localhost:8080|' .env
 
-  log ".env created with a generated JWT secret."
+  # New database: MongoDB requires a login from day one. It creates the administrator
+  # account itself, and mongo-init/ adds the app's own limited account.
+  hexpw() { head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+  {
+    echo
+    echo "# MongoDB accounts (created automatically on this new database). Keep .env backed up."
+    echo "MONGO_ROOT_USERNAME=gtadmin"
+    echo "MONGO_ROOT_PASSWORD=$(hexpw)"
+    echo "MONGO_APP_USERNAME=treasury"
+    echo "MONGO_APP_PASSWORD=$(hexpw)"
+  } >> .env
+  chmod 600 .env
+
+  log ".env created with a generated JWT secret and database passwords."
 else
   log ".env already exists. Leaving it unchanged."
 fi
