@@ -13,7 +13,7 @@ import time
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://church-treasury-5.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://localhost:8080").rstrip("/")
 API = f"{BASE_URL}/api"
 
 ADMIN = {"name": "Church Admin", "email": "treasurer@church.org", "password": "Church#Treasury2026"}
