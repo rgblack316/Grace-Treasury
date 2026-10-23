@@ -51,6 +51,7 @@ JWT_ALGORITHM = "HS256"
 
 # ----------------------------- Receipt storage (MongoDB GridFS — fully local) -----------------------------
 import re
+from xml.sax.saxutils import escape as xml_escape
 
 fs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="receipts")
 
@@ -1677,8 +1678,15 @@ async def treasurer_report(
 
 
 # ----------------------------- PDF -----------------------------
+def esc(value) -> str:
+    """Make text safe to put inside ReportLab Paragraph markup: < > & print as themselves
+    instead of being read as formatting tags (e.g. <font>, <a href>, <img src>)."""
+    return xml_escape(str(value if value is not None else ""), {'"': "&quot;", "'": "&#39;"})
+
+
 def money(v: float) -> str:
-    return f"${v:,.2f}"
+    v = round(float(v or 0), 2) + 0.0  # + 0.0 turns -0.0 into 0.0
+    return f"-${abs(v):,.2f}" if v < 0 else f"${v:,.2f}"
 
 
 def fmt_date(s: str) -> str:
@@ -1719,9 +1727,9 @@ async def treasurer_report_pdf(
 
     elems = []
     church = report["church"]
-    elems.append(Paragraph(church.get("church_name", "Church"), h_title))
+    elems.append(Paragraph(esc(church.get("church_name") or "Church"), h_title))
     elems.append(Paragraph("Treasurer's Report", h_sub))
-    elems.append(Paragraph(f"{fmt_date(start)} &mdash; {fmt_date(end)}", h_sub))
+    elems.append(Paragraph(f"{esc(fmt_date(start))} &mdash; {esc(fmt_date(end))}", h_sub))
     elems.append(Spacer(1, 6))
     elems.append(HRFlowable(width="100%", thickness=1.2, color=navy))
 
@@ -1730,8 +1738,8 @@ async def treasurer_report_pdf(
         if idx > 0:
             elems.append(PageBreak())
         title = acc["mask"] or acc["name"]
-        elems.append(Paragraph(f"Account {title} &nbsp; <font size=9 color='#64748B'>{acc['name']}</font>", h_acc))
-        elems.append(Paragraph(f"Balance Forward as of {fmt_date(start)}: <b>{money(acc['balance_forward'])}</b>", normal))
+        elems.append(Paragraph(f"Account {esc(title)} &nbsp; <font size=9 color='#64748B'>{esc(acc['name'])}</font>", h_acc))
+        elems.append(Paragraph(f"Balance Forward as of {esc(fmt_date(start))}: <b>{money(acc['balance_forward'])}</b>", normal))
 
         # Expenses
         elems.append(Paragraph("Expenses", label))
@@ -1808,7 +1816,7 @@ async def treasurer_report_pdf(
     elems.append(Spacer(1, 22))
     elems.append(Paragraph("______________________________&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Date: ____________", normal))
     tname = church.get("treasurer_name") or ""
-    elems.append(Paragraph(f"{tname}, Treasurer" if tname else "Treasurer", ParagraphStyle("t", parent=normal, textColor=muted, fontSize=8)))
+    elems.append(Paragraph(f"{esc(tname)}, Treasurer" if tname else "Treasurer", ParagraphStyle("t", parent=normal, textColor=muted, fontSize=8)))
 
     doc.build(elems)
     buf.seek(0)
