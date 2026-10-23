@@ -227,8 +227,11 @@ You'll also need MongoDB running locally (`mongodb://localhost:27017`).
   All user and role changes are recorded in **Settings → Security → Activity Log**.
 - **Account emails:** if SMTP is set up (Backup & Restore → Email), users are emailed when their account is
   created, their password is reset or changed, or their role changes. Passwords are never included.
-- If you put the app behind a Cloudflare Tunnel, set `TRUSTED_PROXY` so lockouts use each visitor's real IP
-  (otherwise every visitor appears to come from the tunnel).
+- **Cloudflare Tunnel:** the app reads each visitor's real IP from Cloudflare so lockouts work per visitor.
+  If cloudflared runs on the **same machine/VM** as Grace Treasury, no setup is needed. If it runs on a
+  different machine, set `TRUSTED_PROXY` in `.env` to that machine's IP. (This is an app setting, not a
+  Cloudflare one.) To check: after one wrong password from your phone, **Settings → Security** should show
+  your phone's public IP, not a `172.x.x.x` address.
 
 ---
 
