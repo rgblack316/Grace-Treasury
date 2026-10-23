@@ -24,6 +24,12 @@ import uuid
 import io
 import bcrypt
 import jwt
+import base64
+import secrets
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from datetime import datetime, timezone, timedelta, date
 
 from reportlab.lib.pagesizes import letter
@@ -116,7 +122,7 @@ PERMISSION_LABELS = {
     "reports.view": "View, print and export reports",
     "settings.manage": "Manage accounts, funds, categories and payees",
     "users.manage": "Manage users and roles (Administrators only)",
-    "data.manage": "Back up and restore the database",
+    "data.manage": "Back up and restore the database (Administrators only)",
 }
 
 app = FastAPI()
@@ -150,7 +156,7 @@ def create_access_token(user_id: str, email: str, version: int = 0) -> str:
 
 
 # Permissions that only Administrators hold; custom roles can never include them.
-ADMIN_ONLY_PERMISSIONS = {"users.manage"}
+ADMIN_ONLY_PERMISSIONS = {"users.manage", "data.manage"}
 ASSIGNABLE_PERMISSIONS = [p for p in ALL_PERMISSIONS if p not in ADMIN_ONLY_PERMISSIONS]
 
 
@@ -1799,55 +1805,211 @@ async def update_church(data: ChurchSettings, user: dict = Depends(require_setti
     return doc
 
 
+# ----------------------------- Secrets at rest -----------------------------
+# Secrets the app must keep in its own database (the SMTP password, the backup encryption key)
+# are sealed with a key derived from JWT_SECRET, so a copied database or dump alone doesn't
+# reveal them. Changing JWT_SECRET means re-entering the SMTP password and backup passphrase.
+_AT_REST_KEY = HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
+                    info=b"grace-treasury/secrets-at-rest/v1").derive(JWT_SECRET.encode("utf-8"))
+SEALED_PREFIX = "enc:v1:"
+_SEAL_AAD = b"grace-treasury-secret"
+
+
+def _b64e(b: bytes) -> str:
+    return base64.b64encode(b).decode("ascii")
+
+
+def _b64d(s: str) -> bytes:
+    return base64.b64decode(s)
+
+
+def seal(plain: str) -> str:
+    if not plain:
+        return ""
+    if plain.startswith(SEALED_PREFIX):
+        return plain
+    nonce = secrets.token_bytes(12)
+    return SEALED_PREFIX + _b64e(nonce + AESGCM(_AT_REST_KEY).encrypt(nonce, plain.encode("utf-8"), _SEAL_AAD))
+
+
+def unseal(value: str) -> str:
+    if not value:
+        return ""
+    if not value.startswith(SEALED_PREFIX):
+        return value  # stored before encryption existed; sealed on the next startup
+    try:
+        raw = _b64d(value[len(SEALED_PREFIX):])
+        return AESGCM(_AT_REST_KEY).decrypt(raw[:12], raw[12:], _SEAL_AAD).decode("utf-8")
+    except Exception:
+        logger.error("Could not decrypt a stored secret — was JWT_SECRET changed? Re-enter it in Settings.")
+        return ""
+
+
 # ----------------------------- Data backup / restore -----------------------------
 EXPORT_COLLECTIONS = ["users", "roles", "accounts", "funds", "categories", "payees", "transactions", "fund_activity", "files", "settings"]
+# Settings documents that stay on this server and are never written into a backup.
+SERVER_ONLY_SETTINGS = {"backup_encryption"}
+
+BACKUP_FORMAT = "grace-treasury-encrypted-backup"
+BACKUP_AAD = BACKUP_FORMAT.encode("ascii")
+SCRYPT_PARAMS = {"n": 2 ** 15, "r": 8, "p": 1}
+MIN_PASSPHRASE = 12
+
+
+class PassphraseInput(BaseModel):
+    passphrase: str
+
+
+class RestoreInput(BaseModel):
+    passphrase: Optional[str] = None
+
+
+def derive_backup_key(passphrase: str, salt: bytes, n: int, r: int, p: int) -> bytes:
+    return Scrypt(salt=salt, length=32, n=n, r=r, p=p).derive(passphrase.encode("utf-8"))
+
+
+async def get_backup_crypto() -> Optional[dict]:
+    """The active backup key and KDF parameters, or None if no passphrase has been set."""
+    doc = await db.settings.find_one({"id": "backup_encryption"}, {"_id": 0})
+    if not doc or not doc.get("key"):
+        return None
+    key_b64 = unseal(doc["key"])
+    if not key_b64:
+        return None
+    return {"key": _b64d(key_b64), "kdf": {"name": "scrypt", "salt": doc["salt"], "n": doc["n"], "r": doc["r"], "p": doc["p"]}}
+
+
+def encrypt_backup(payload: dict, crypto: dict) -> dict:
+    nonce = secrets.token_bytes(12)
+    body = json.dumps(payload).encode("utf-8")
+    return {
+        "format": BACKUP_FORMAT, "version": 1, "exported_at": payload.get("exported_at"),
+        "note": "Encrypted Grace Treasury backup. Restore it in Grace Treasury with your backup passphrase.",
+        "kdf": crypto["kdf"], "nonce": _b64e(nonce),
+        "ciphertext": _b64e(AESGCM(crypto["key"]).encrypt(nonce, body, BACKUP_AAD)),
+    }
+
+
+def is_encrypted_backup(payload) -> bool:
+    return isinstance(payload, dict) and payload.get("format") == BACKUP_FORMAT
+
+
+async def decrypt_backup(envelope: dict, passphrase: Optional[str]) -> dict:
+    if not passphrase:
+        raise HTTPException(status_code=400, detail="This backup is encrypted. Enter its backup passphrase to restore it.")
+    try:
+        kdf = envelope["kdf"]
+        key = await asyncio.to_thread(derive_backup_key, passphrase, _b64d(kdf["salt"]), int(kdf["n"]), int(kdf["r"]), int(kdf["p"]))
+        plain = AESGCM(key).decrypt(_b64d(envelope["nonce"]), _b64d(envelope["ciphertext"]), BACKUP_AAD)
+    except (KeyError, ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="This encrypted backup file is damaged or incomplete")
+    except Exception:  # InvalidTag: wrong passphrase or altered file
+        raise HTTPException(status_code=400, detail="That passphrase doesn't match this backup (or the file was altered)")
+    return json.loads(plain.decode("utf-8"))
 
 
 async def build_export_payload() -> dict:
+    """Everything needed to rebuild the treasury, minus server-only secrets (SMTP password, backup key)."""
     payload = {"version": 1, "app": "church-treasury", "exported_at": now_iso(), "data": {}}
     for coll in EXPORT_COLLECTIONS:
         docs = await db[coll].find({}, {"_id": 0}).to_list(100000)
+        if coll == "settings":
+            docs = [d for d in docs if d.get("id") not in SERVER_ONLY_SETTINGS]
+            for d in docs:
+                if d.get("id") == "email":
+                    d.pop("smtp_password", None)
         payload["data"][coll] = docs
     return payload
 
 
-@api_router.get("/data/export")
-async def export_data(user: dict = Depends(require_data)):
+async def build_backup_file() -> tuple:
+    """(bytes, encrypted?) for a backup — encrypted whenever a passphrase is set."""
     payload = await build_export_payload()
-    body = json.dumps(payload, indent=2)
-    filename = f"church-treasury-backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
-    return Response(
-        content=body,
-        media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
+    crypto = await get_backup_crypto()
+    if crypto:
+        return json.dumps(encrypt_backup(payload, crypto)).encode("utf-8"), True
+    return json.dumps(payload, indent=2).encode("utf-8"), False
 
 
-@api_router.post("/data/import")
-async def import_data(file: UploadFile = File(...), user: dict = Depends(require_admin)):
-    import json as _json
-    try:
-        payload = _json.loads((await file.read()).decode("utf-8-sig", errors="replace"))
-    except Exception:
-        raise HTTPException(status_code=400, detail="This file is not a valid backup (JSON could not be read)")
-    data = payload.get("data")
-    if not isinstance(data, dict) or "users" not in data:
-        raise HTTPException(status_code=400, detail="This does not look like a Church Treasury backup file")
-    if not isinstance(data.get("users"), list) or len(data["users"]) == 0:
-        raise HTTPException(status_code=400, detail="The backup has no users — restoring it would lock you out")
+def backup_filename(encrypted: bool) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"{BACKUP_PREFIX}{stamp}{'-enc' if encrypted else ''}.json"
+
+
+async def apply_restore(payload, passphrase: Optional[str], actor: dict, request: Optional[Request], source: str) -> dict:
+    if is_encrypted_backup(payload):
+        payload = await decrypt_backup(payload, passphrase)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict) or not isinstance(data.get("users"), list) or len(data["users"]) == 0:
+        raise HTTPException(status_code=400, detail="This is not a valid backup, or it has no users (restoring it would lock you out)")
+
+    # Server-only secrets are never in a backup, so keep this server's copies.
+    keep = {d["id"]: d for d in await db.settings.find({"id": {"$in": list(SERVER_ONLY_SETTINGS)}}, {"_id": 0}).to_list(10)}
+    current_email = await db.settings.find_one({"id": "email"}, {"_id": 0}) or {}
 
     counts = {}
     for coll in EXPORT_COLLECTIONS:
         docs = data.get(coll)
         if not isinstance(docs, list):
             continue
+        if coll == "settings":
+            docs = [d for d in docs if isinstance(d, dict) and d.get("id") not in SERVER_ONLY_SETTINGS]
+            for d in docs:
+                if d.get("id") == "email":
+                    # older backups may carry a plain-text password; otherwise keep the current one
+                    d["smtp_password"] = seal(d.get("smtp_password") or "") or current_email.get("smtp_password", "")
         await db[coll].delete_many({})
         if docs:
             for d in docs:
                 d.pop("_id", None)
             await db[coll].insert_many(docs)
         counts[coll] = len(docs)
+    for doc in keep.values():
+        await db.settings.update_one({"id": doc["id"]}, {"$set": doc}, upsert=True)
+    # Every session from before the restore ends now.
+    await db.users.update_many({}, {"$inc": {"token_version": 1}})
+    await audit(actor, "data.restore", None, source, request)
     return {"ok": True, "restored": counts}
+
+
+@api_router.get("/data/export")
+async def export_data(request: Request, user: dict = Depends(require_data)):
+    body, encrypted = await build_backup_file()
+    filename = backup_filename(encrypted)
+    await audit(user, "data.export", None, f"{filename} ({'encrypted' if encrypted else 'NOT encrypted'})", request)
+    return Response(content=body, media_type="application/json",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
+@api_router.post("/data/import")
+async def import_data(request: Request, file: UploadFile = File(...), passphrase: Optional[str] = Form(None),
+                      user: dict = Depends(require_admin)):
+    try:
+        payload = json.loads((await file.read()).decode("utf-8-sig", errors="replace"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="This file is not a valid backup (JSON could not be read)")
+    return await apply_restore(payload, passphrase, user, request, f"Uploaded file {os.path.basename(file.filename or '')}")
+
+
+# ----------------------------- Backup encryption passphrase -----------------------------
+@api_router.get("/settings/backup-encryption")
+async def get_backup_encryption(user: dict = Depends(require_data)):
+    doc = await db.settings.find_one({"id": "backup_encryption"}, {"_id": 0, "set_at": 1, "key": 1})
+    return {"enabled": bool(doc and doc.get("key")), "set_at": (doc or {}).get("set_at")}
+
+
+@api_router.put("/settings/backup-encryption")
+async def set_backup_passphrase(data: PassphraseInput, request: Request, user: dict = Depends(require_data)):
+    pw = data.passphrase or ""
+    if len(pw) < MIN_PASSPHRASE:
+        raise HTTPException(status_code=400, detail=f"Use a passphrase of at least {MIN_PASSPHRASE} characters (a few unrelated words works well)")
+    salt = secrets.token_bytes(16)
+    key = await asyncio.to_thread(derive_backup_key, pw, salt, **SCRYPT_PARAMS)
+    existed = await db.settings.find_one({"id": "backup_encryption"})
+    doc = {"id": "backup_encryption", "salt": _b64e(salt), **SCRYPT_PARAMS, "key": seal(_b64e(key)), "set_at": now_iso()}
+    await db.settings.update_one({"id": "backup_encryption"}, {"$set": doc}, upsert=True)
+    await audit(user, "backup.passphrase_changed" if existed else "backup.passphrase_set", None, "", request)
+    return {"enabled": True, "set_at": doc["set_at"]}
 
 
 # ----------------------------- Scheduled backups -----------------------------
@@ -1867,6 +2029,21 @@ def _safe_backup_name(name: str) -> str:
     if not base.startswith(BACKUP_PREFIX) or not base.endswith(".json") or "/" in name or ".." in name:
         raise HTTPException(status_code=400, detail="Invalid backup file name")
     return base
+
+
+def secure_backup_dir():
+    try:
+        os.chmod(BACKUP_DIR, 0o700)
+    except OSError:
+        pass
+
+
+def write_private_file(path: str, data: bytes):
+    """Write a file readable only by the app's own user (mode 600)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.chmod(path, 0o600)
 
 
 async def get_backup_settings() -> dict:
@@ -1891,14 +2068,15 @@ def apply_retention(retention: int):
 
 
 async def run_backup() -> str:
-    payload = await build_export_payload()
-    fname = f"{BACKUP_PREFIX}{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
-    full = os.path.join(BACKUP_DIR, fname)
-    with open(full, "w") as f:
-        json.dump(payload, f, indent=2)
+    body, encrypted = await build_backup_file()
+    fname = backup_filename(encrypted)
+    write_private_file(os.path.join(BACKUP_DIR, fname), body)
     cfg = await get_backup_settings()
     apply_retention(int(cfg.get("retention", 14)))
-    logger.info(f"Backup written: {fname}")
+    if not encrypted:
+        logger.warning(f"Backup written WITHOUT encryption: {fname} — set a backup passphrase in Settings → Backup & Restore")
+    else:
+        logger.info(f"Encrypted backup written: {fname}")
     return fname
 
 
@@ -1942,64 +2120,58 @@ async def list_backups(user: dict = Depends(require_data)):
     out = []
     for path in sorted(glob.glob(os.path.join(BACKUP_DIR, f"{BACKUP_PREFIX}*.json")), reverse=True):
         st = os.stat(path)
+        name = os.path.basename(path)
         out.append({
-            "name": os.path.basename(path),
+            "name": name,
             "size": st.st_size,
             "created_at": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+            "encrypted": name.endswith("-enc.json"),
         })
     return out
 
 
 @api_router.post("/backups/run")
-async def run_backup_now(user: dict = Depends(require_data)):
+async def run_backup_now(request: Request, user: dict = Depends(require_data)):
     name = await run_backup()
-    return {"ok": True, "name": name}
+    await audit(user, "backup.run", None, name, request)
+    return {"ok": True, "name": name, "encrypted": name.endswith("-enc.json")}
 
 
 @api_router.get("/backups/{name}/download")
 async def download_backup(name: str, request: Request, auth: Optional[str] = Query(None)):
-    await user_for_download(request, auth, "data.manage")
+    user = await user_for_download(request, auth, "data.manage")
     base = _safe_backup_name(name)
     full = os.path.join(BACKUP_DIR, base)
     if not os.path.exists(full):
         raise HTTPException(status_code=404, detail="Backup not found")
     with open(full, "rb") as f:
         content = f.read()
+    await audit(user, "backup.download", None, base, request)
     return Response(content=content, media_type="application/json", headers={"Content-Disposition": f"attachment; filename={base}"})
 
 
 @api_router.delete("/backups/{name}")
-async def delete_backup(name: str, user: dict = Depends(require_data)):
+async def delete_backup(name: str, request: Request, user: dict = Depends(require_data)):
     base = _safe_backup_name(name)
     full = os.path.join(BACKUP_DIR, base)
     if os.path.exists(full):
         os.remove(full)
+        await audit(user, "backup.delete", None, base, request)
     return {"ok": True}
 
 
 @api_router.post("/backups/{name}/restore")
-async def restore_backup(name: str, user: dict = Depends(require_admin)):
+async def restore_backup(name: str, request: Request, data: Optional[RestoreInput] = None, user: dict = Depends(require_admin)):
     base = _safe_backup_name(name)
     full = os.path.join(BACKUP_DIR, base)
     if not os.path.exists(full):
         raise HTTPException(status_code=404, detail="Backup not found")
-    with open(full) as f:
-        payload = json.load(f)
-    data = payload.get("data")
-    if not isinstance(data, dict) or not isinstance(data.get("users"), list) or len(data["users"]) == 0:
-        raise HTTPException(status_code=400, detail="This backup is invalid or has no users")
-    counts = {}
-    for coll in EXPORT_COLLECTIONS:
-        docs = data.get(coll)
-        if not isinstance(docs, list):
-            continue
-        await db[coll].delete_many({})
-        if docs:
-            for d in docs:
-                d.pop("_id", None)
-            await db[coll].insert_many(docs)
-        counts[coll] = len(docs)
-    return {"ok": True, "restored": counts}
+    try:
+        with open(full) as f:
+            payload = json.load(f)
+    except Exception:
+        raise HTTPException(status_code=400, detail="This backup file could not be read")
+    return await apply_restore(payload, (data.passphrase if data else None), user, request, f"Server backup {base}")
 
 
 # ----------------------------- Email backups (SMTP) -----------------------------
@@ -2041,7 +2213,7 @@ def _send_email_sync(cfg: dict, subject: str, body: str, att_name=None, att_byte
     host = cfg.get("smtp_host")
     port = int(cfg.get("smtp_port") or 587)
     username = cfg.get("smtp_username") or ""
-    password = cfg.get("smtp_password") or ""
+    password = unseal(cfg.get("smtp_password") or "")
     if port == 465:
         with smtplib.SMTP_SSL(host, port, timeout=30) as s:
             if username:
@@ -2105,6 +2277,9 @@ async def maybe_email_backup(fname: str):
     cfg = await get_email_settings()
     if not cfg.get("enabled") or not cfg.get("smtp_host") or not cfg.get("to_address"):
         return
+    if not fname.endswith("-enc.json"):
+        logger.warning(f"Not emailing {fname}: backups are only emailed when encrypted. Set a backup passphrase.")
+        return
     try:
         full = os.path.join(BACKUP_DIR, fname)
         with open(full, "rb") as f:
@@ -2114,7 +2289,8 @@ async def maybe_email_backup(fname: str):
         await asyncio.to_thread(
             _send_email_sync, cfg,
             f"{name} — Treasury backup {fname}",
-            f"Attached is the automatic database backup from {name}.\n\nFile: {fname}\nKeep this somewhere safe for off-site safekeeping.",
+            f"Attached is the automatic, encrypted database backup from {name}.\n\nFile: {fname}\n"
+            "Keep it somewhere safe for off-site safekeeping. Restoring it requires the backup passphrase.",
             fname, data,
         )
         logger.info(f"Backup emailed to {cfg['to_address']}")
@@ -2153,7 +2329,7 @@ async def update_email_config(data: EmailConfig, request: Request, user: dict = 
         "from_address": data.from_address.strip(),
         "to_address": data.to_address.strip(),
         "notify_users": data.notify_users,
-        "smtp_password": existing.get("smtp_password", "") if data.smtp_password in (None, "") else data.smtp_password,
+        "smtp_password": existing.get("smtp_password", "") if data.smtp_password in (None, "") else seal(data.smtp_password),
     }
     await db.settings.update_one({"id": "email"}, {"$set": doc}, upsert=True)
     return {"ok": True}
@@ -2176,10 +2352,12 @@ async def send_test_email(user: dict = Depends(require_data)):
 
 
 @api_router.post("/backups/{name}/email")
-async def email_backup(name: str, user: dict = Depends(require_data)):
+async def email_backup(name: str, request: Request, user: dict = Depends(require_data)):
     base = _safe_backup_name(name)
     if not os.path.exists(os.path.join(BACKUP_DIR, base)):
         raise HTTPException(status_code=404, detail="Backup not found")
+    if not base.endswith("-enc.json"):
+        raise HTTPException(status_code=400, detail="Only encrypted backups can be emailed. Set a backup passphrase, then use Back Up Now.")
     cfg = await get_email_settings()
     if not cfg.get("smtp_host") or not cfg.get("to_address"):
         raise HTTPException(status_code=400, detail="Email is not configured. Set it up under Email Backups first.")
@@ -2187,6 +2365,7 @@ async def email_backup(name: str, user: dict = Depends(require_data)):
         await maybe_email_backup_force(base, cfg)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not send email: {e}")
+    await audit(user, "backup.email", None, f"{base} → {cfg.get('to_address')}", request)
     return {"ok": True}
 
 
@@ -2199,7 +2378,7 @@ async def maybe_email_backup_force(fname: str, cfg: dict):
     await asyncio.to_thread(
         _send_email_sync, cfg,
         f"{name} — Treasury backup {fname}",
-        f"Attached is a database backup from {name}.\n\nFile: {fname}",
+        f"Attached is an encrypted database backup from {name}.\n\nFile: {fname}\nRestoring it requires the backup passphrase.",
         fname, data,
     )
 
@@ -2267,6 +2446,15 @@ async def strip_admin_only_permissions():
         logger.warning(f"Removed {removed} from role '{role.get('name')}' — user management is now Administrator-only")
 
 
+async def seal_stored_secrets():
+    """Upgrade step: encrypt an SMTP password stored in plain text by older versions."""
+    doc = await db.settings.find_one({"id": "email"}, {"_id": 0, "smtp_password": 1})
+    pw = (doc or {}).get("smtp_password") or ""
+    if pw and not pw.startswith(SEALED_PREFIX):
+        await db.settings.update_one({"id": "email"}, {"$set": {"smtp_password": seal(pw)}})
+        logger.info("Encrypted the stored SMTP password")
+
+
 @app.on_event("startup")
 async def startup():
     await ensure_indexes()
@@ -2274,6 +2462,11 @@ async def startup():
         await strip_admin_only_permissions()
     except Exception as e:
         logger.error(f"Role permission upgrade failed: {e}")
+    try:
+        await seal_stored_secrets()
+    except Exception as e:
+        logger.error(f"Sealing stored secrets failed: {e}")
+    secure_backup_dir()
     try:
         await get_backup_settings()
         await reschedule_backup()

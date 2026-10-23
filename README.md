@@ -241,15 +241,31 @@ From **Settings → Backup & Restore** you can:
   recent backups to keep. Nightly backups are written to the `BACKUP_DIR` folder (mapped to `./backups`
   on your host by the Compose file) and can be downloaded, restored, or deleted from the same page.
 
-Store exported backups somewhere safe (they contain your records and hashed logins). Receipt images
-live in MongoDB and are preserved by the `mongo_data` volume.
+Backup & Restore is **Administrator-only**.
+
+**Encrypt your backups.** Set a **backup passphrase** under **Backup Encryption** and every backup —
+nightly, downloaded, and emailed — is encrypted (AES-256-GCM, key derived from the passphrase with
+scrypt). Restoring an encrypted backup asks for its passphrase. **If the passphrase is lost, encrypted
+backups cannot be opened** — write it down and keep it somewhere safe away from the server. Changing the
+passphrase doesn't re-encrypt older backups; they still open with the passphrase in use when they were made.
+
+Backups never include the email (SMTP) password; after restoring onto a new server, re-enter it under
+Email Backups. Backup files are readable only by the app's user (`./backups` is mode 700, files 600).
+Receipt images live in MongoDB and are preserved by the `mongo_data` volume.
+
+The SMTP password and the backup key are stored encrypted in the database using a key derived from
+`JWT_SECRET`. If you ever change `JWT_SECRET`, re-enter the SMTP password and set the backup passphrase again.
+
+`upgrade.sh` also saves a full database dump and a copy of `.env` in `backups/pre-upgrade-*` (owner-only
+permissions). These are **not** encrypted — delete old ones once an upgrade is confirmed working.
 
 ### Email backups (off-site copy)
 Under **Settings → Backup & Restore → Email Backups** you can have each nightly backup emailed to the
 treasurer automatically, using your own email account (SMTP — e.g. Gmail with an app password, or your
 church's mail server). Enter the SMTP host/port/username/password, a from and recipient address, pick
 STARTTLS (port 587) or SSL (port 465), and use **Send Test Email** to confirm it works. Nothing leaves
-your server except the email you send through your own provider.
+your server except the email you send through your own provider. Only **encrypted** backups are emailed, so set a backup
+passphrase first.
 
 ---
 
