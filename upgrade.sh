@@ -144,11 +144,15 @@ DB_NAME="${DB_NAME:-church_treasury}"
 if docker_cmd compose ps --services --filter "status=running" | grep -q '^mongo$'; then
   log "Creating pre-upgrade MongoDB backup ($DB_NAME)..."
 
-  docker_cmd compose exec -T mongo \
-    mongodump \
-    --db "$DB_NAME" \
-    --archive \
-    --gzip \
+  # If database passwords are on, sign in with the administrator account (the mongo
+  # container already has it in its environment); otherwise connect as before.
+  docker_cmd compose exec -T mongo sh -c '
+    if [ -n "${MONGO_INITDB_ROOT_PASSWORD:-}" ]; then
+      exec mongodump --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" \
+        --authenticationDatabase admin --db "$0" --archive --gzip
+    else
+      exec mongodump --db "$0" --archive --gzip
+    fi' "$DB_NAME" \
     > "$DB_BACKUP_DIR/mongodb.archive.gz"
 
   if [ ! -s "$DB_BACKUP_DIR/mongodb.archive.gz" ]; then
@@ -210,7 +214,11 @@ echo "Environment backup:"
 echo "    $DB_BACKUP_DIR/.env"
 echo
 echo "To restore this pre-upgrade backup if needed:"
-echo "    gunzip -c \"$DB_BACKUP_DIR/mongodb.archive.gz\" | docker compose exec -T mongo mongorestore --archive --gzip --drop"
+if grep -qE '^MONGO_ROOT_PASSWORD=.+' .env; then
+  echo "    gunzip -c \"$DB_BACKUP_DIR/mongodb.archive.gz\" | docker compose exec -T mongo sh -c 'mongorestore --username \"\$MONGO_INITDB_ROOT_USERNAME\" --password \"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --archive --gzip --drop'"
+else
+  echo "    gunzip -c \"$DB_BACKUP_DIR/mongodb.archive.gz\" | docker compose exec -T mongo mongorestore --archive --gzip --drop"
+fi
 echo
 echo "MongoDB data remains in the existing Docker volume; this script does not remove it."
 echo

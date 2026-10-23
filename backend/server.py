@@ -47,7 +47,14 @@ from reportlab.platypus import (
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
+# When MongoDB requires a login (see enable-db-auth.sh), the app signs in with its own
+# limited account. Without these variables it connects exactly as before.
+_mongo_user = os.environ.get("MONGO_USERNAME", "").strip()
+_mongo_pass = os.environ.get("MONGO_PASSWORD", "")
+_mongo_auth = ({"username": _mongo_user, "password": _mongo_pass,
+                "authSource": os.environ.get("MONGO_AUTH_SOURCE", "admin")}
+               if _mongo_user and _mongo_pass else {})
+client = AsyncIOMotorClient(mongo_url, **_mongo_auth)
 db = client[os.environ['DB_NAME']]
 
 JWT_SECRET = os.environ['JWT_SECRET']
