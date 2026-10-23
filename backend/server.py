@@ -227,16 +227,17 @@ async def require_users(user: dict = Depends(get_current_user)) -> dict:
 require_data = require_permission("data.manage")
 
 
-async def user_for_download(request: Request, auth: Optional[str], permission: str) -> dict:
-    """Auth for download links that may pass the token as ?auth=…; still enforces the permission."""
-    token = auth
-    if not token:
-        header = request.headers.get("Authorization", "")
-        token = header[7:] if header.startswith("Bearer ") else None
-    user = await user_from_token(token)
-    if permission not in user.get("permissions", []):
-        raise HTTPException(status_code=403, detail="You do not have permission to perform this action")
-    return user
+# Headers for anything containing church data: don't let browsers or proxies keep a copy,
+# and don't let a browser reinterpret a file as a different (e.g. HTML) type.
+PRIVATE_DOWNLOAD_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+
+
+def private_download_headers(filename: Optional[str] = None, inline: bool = False) -> dict:
+    headers = dict(PRIVATE_DOWNLOAD_HEADERS)
+    if filename:
+        safe = re.sub(r'[^A-Za-z0-9._-]', "_", filename)[:150] or "download"
+        headers["Content-Disposition"] = f'{"inline" if inline else "attachment"}; filename="{safe}"'
+    return headers
 
 
 def is_admin(user: dict) -> bool:
@@ -1168,8 +1169,7 @@ async def list_attachments(txn_id: str, user: dict = Depends(require_txn_view)):
 
 
 @api_router.get("/attachments/{file_id}/download")
-async def download_attachment(file_id: str, request: Request, auth: Optional[str] = Query(None)):
-    await user_for_download(request, auth, "transactions.view")
+async def download_attachment(file_id: str, user: dict = Depends(require_txn_view)):
     record = await db.files.find_one({"id": file_id, "is_deleted": False})
     if not record or not record.get("gridfs_id"):
         raise HTTPException(status_code=404, detail="File not found")
@@ -1178,7 +1178,8 @@ async def download_attachment(file_id: str, request: Request, auth: Optional[str
         content = await stream.read()
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
-    return Response(content=content, media_type=record.get("content_type", "application/octet-stream"))
+    return Response(content=content, media_type=record.get("content_type", "application/octet-stream"),
+                    headers=private_download_headers(record.get("original_filename") or "receipt", inline=True))
 
 
 @api_router.delete("/attachments/{file_id}")
@@ -1209,7 +1210,7 @@ async def import_template(user: dict = Depends(require_txn_manage)):
     return Response(
         content=out.getvalue(),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=transaction-import-template.csv"},
+        headers=private_download_headers("transaction-import-template.csv"),
     )
 
 
@@ -1763,7 +1764,7 @@ async def treasurer_report_pdf(
     doc.build(elems)
     buf.seek(0)
     filename = f"treasurers-report-{start}-to-{end}.pdf"
-    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename={filename}"})
+    return StreamingResponse(buf, media_type="application/pdf", headers=private_download_headers(filename))
 
 
 def _table_style(navy, nrows, total_row=True):
@@ -1978,7 +1979,7 @@ async def export_data(request: Request, user: dict = Depends(require_data)):
     filename = backup_filename(encrypted)
     await audit(user, "data.export", None, f"{filename} ({'encrypted' if encrypted else 'NOT encrypted'})", request)
     return Response(content=body, media_type="application/json",
-                    headers={"Content-Disposition": f"attachment; filename={filename}"})
+                    headers=private_download_headers(filename))
 
 
 @api_router.post("/data/import")
@@ -2138,8 +2139,7 @@ async def run_backup_now(request: Request, user: dict = Depends(require_data)):
 
 
 @api_router.get("/backups/{name}/download")
-async def download_backup(name: str, request: Request, auth: Optional[str] = Query(None)):
-    user = await user_for_download(request, auth, "data.manage")
+async def download_backup(name: str, request: Request, user: dict = Depends(require_data)):
     base = _safe_backup_name(name)
     full = os.path.join(BACKUP_DIR, base)
     if not os.path.exists(full):
@@ -2147,7 +2147,7 @@ async def download_backup(name: str, request: Request, auth: Optional[str] = Que
     with open(full, "rb") as f:
         content = f.read()
     await audit(user, "backup.download", None, base, request)
-    return Response(content=content, media_type="application/json", headers={"Content-Disposition": f"attachment; filename={base}"})
+    return Response(content=content, media_type="application/json", headers=private_download_headers(base))
 
 
 @api_router.delete("/backups/{name}")
