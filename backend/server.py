@@ -1001,7 +1001,7 @@ async def list_transactions(
     type: Optional[str] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
-    search: Optional[str] = None,
+    search: Optional[str] = Query(None, max_length=100),
     cleared: Optional[bool] = None,
 ):
     query: dict = {}
@@ -1024,11 +1024,14 @@ async def list_transactions(
         if end:
             drange["$lte"] = end
         query["date"] = drange
-    if search:
+    if search and search.strip():
+        # Treat the search box as plain text (re.escape), so characters like . ( * + match
+        # themselves and can't be used to build slow patterns.
+        pattern = re.escape(search.strip())
         query["$and"] = query.get("$and", []) + [{
             "$or": [
-                {"memo": {"$regex": search, "$options": "i"}},
-                {"check_number": {"$regex": search, "$options": "i"}},
+                {"memo": {"$regex": pattern, "$options": "i"}},
+                {"check_number": {"$regex": pattern, "$options": "i"}},
             ]
         }]
     items = await db.transactions.find(query, {"_id": 0}).sort("date", -1).to_list(5000)

@@ -208,7 +208,7 @@ export default function Transactions() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="relative lg:col-span-2">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input placeholder="Search memo or check #…" value={filters.search} onChange={(e) => setF("search", e.target.value)} className="pl-9" data-testid="transactions-search-input" />
+            <Input placeholder="Search memo or check #…" maxLength={100} value={filters.search} onChange={(e) => setF("search", e.target.value)} className="pl-9" data-testid="transactions-search-input" />
           </div>
           <Select value={filters.account_id || ALL} onValueChange={(v) => setF("account_id", v)}>
             <SelectTrigger data-testid="filter-account"><SelectValue placeholder="All accounts" /></SelectTrigger>
