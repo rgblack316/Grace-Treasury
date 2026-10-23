@@ -10,6 +10,8 @@ COPY package.json yarn.lock* ./
 RUN yarn install --frozen-lockfile || yarn install
 
 COPY . .
+# Keep all JavaScript in files (no inline startup script) so the Content Security Policy can forbid inline scripts.
+ENV INLINE_RUNTIME_CHUNK=false
 RUN yarn build
 
 # ---- Serve with Nginx + proxy /api to the backend ----
