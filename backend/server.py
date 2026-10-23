@@ -144,15 +144,36 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, email: str, version: int = 0) -> str:
+# Sessions: a token lasts SESSION_IDLE_HOURS. While the person is active, responses carry a
+# fresh token (X-Session-Token) about once an hour, so an idle or stolen token expires soon.
+# No session can be renewed past SESSION_MAX_DAYS after the password was last entered.
+SESSION_IDLE = timedelta(hours=float(os.environ.get("SESSION_IDLE_HOURS", "12") or 12))
+SESSION_MAX = timedelta(days=float(os.environ.get("SESSION_MAX_DAYS", "7") or 7))
+SESSION_REFRESH_AFTER = timedelta(hours=1)
+SESSION_HEADER = "X-Session-Token"
+
+
+def create_access_token(user_id: str, email: str, version: int = 0, auth_time: Optional[int] = None) -> str:
+    now = datetime.now(timezone.utc)
+    auth_time = int(auth_time if auth_time is not None else now.timestamp())
     payload = {
         "sub": user_id,
         "email": email,
         "ver": int(version or 0),  # session version; bumping it on the user signs out older tokens
-        "exp": datetime.now(timezone.utc) + timedelta(days=7),
+        "iat": int(now.timestamp()),
+        "auth_time": auth_time,    # when the password was last entered
+        "exp": min(now + SESSION_IDLE, datetime.fromtimestamp(auth_time, timezone.utc) + SESSION_MAX),
         "type": "access",
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def _session_times(payload: dict) -> tuple:
+    """(issued_at, auth_time) as epoch seconds; older 7-day tokens had neither."""
+    iat = payload.get("iat")
+    if iat is None:
+        iat = int(payload.get("exp", 0)) - 7 * 86400
+    return int(iat), int(payload.get("auth_time") or iat)
 
 
 # Permissions that only Administrators hold; custom roles can never include them.
@@ -176,10 +197,15 @@ async def resolve_permissions(user: dict):
 PASSWORD_CHANGE_ALLOWED_PATHS = {"/api/auth/me", "/api/auth/change-password", "/api/settings/church"}
 
 
-async def get_current_user(request: Request) -> dict:
+async def get_current_user(request: Request, response: Response) -> dict:
     auth_header = request.headers.get("Authorization", "")
     token = auth_header[7:] if auth_header.startswith("Bearer ") else None
     user = await user_from_token(token)
+    sess = user["_session"]
+    now = datetime.now(timezone.utc).timestamp()
+    if now - sess["iat"] > SESSION_REFRESH_AFTER.total_seconds():
+        # Active session: hand back a fresh token (same login time, so the 7-day cap still applies).
+        response.headers[SESSION_HEADER] = create_access_token(user["id"], user["email"], sess["ver"], sess["auth_time"])
     if user.get("must_change_password") and request.url.path not in PASSWORD_CHANGE_ALLOWED_PATHS:
         raise HTTPException(status_code=403, detail="Please choose a new password before continuing.")
     return user
@@ -200,11 +226,19 @@ async def user_from_token(token: Optional[str]) -> dict:
         raise HTTPException(status_code=401, detail="User not found")
     if int(payload.get("ver", 0) or 0) != int(user.get("token_version", 0) or 0):
         raise HTTPException(status_code=401, detail="Your session has ended. Please sign in again.")
+    iat, auth_time = _session_times(payload)
+    if datetime.now(timezone.utc).timestamp() - auth_time > SESSION_MAX.total_seconds():
+        raise HTTPException(status_code=401, detail="For your security, please sign in again.")
+    user["_session"] = {"iat": iat, "auth_time": auth_time, "ver": int(payload.get("ver", 0) or 0)}
     user.pop("token_version", None)
     perms, role_name = await resolve_permissions(user)
     user["permissions"] = perms
     user["role_name"] = role_name
     return user
+
+
+def public_user(user: dict) -> dict:
+    return {k: v for k, v in user.items() if not k.startswith("_")}
 
 
 def require_permission(permission: str):
@@ -593,7 +627,7 @@ async def login(data: LoginInput, request: Request):
 
 @api_router.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    return user
+    return public_user(user)
 
 
 @api_router.post("/auth/change-password")
@@ -626,7 +660,7 @@ async def sign_out_everywhere(request: Request, user: dict = Depends(get_current
     """Sign out all of your other sessions (other computers/phones); this one stays signed in."""
     version = await revoke_sessions(user["id"])
     await audit(user, "self.sign_out_everywhere", user, "", request)
-    return {"token": create_access_token(user["id"], user["email"], version)}
+    return {"token": create_access_token(user["id"], user["email"], version, user["_session"]["auth_time"])}
 
 
 @api_router.get("/permissions")
