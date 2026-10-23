@@ -211,7 +211,7 @@ You'll also need MongoDB running locally (`mongodb://localhost:27017`).
 
 - There are **no default credentials**. The first visit forces you to create an admin account.
 - Passwords must be at least **12 characters** and include **uppercase, lowercase, a number, and a symbol**.
-- Only users with the `users.manage` permission (the Administrator) can add/remove users and roles.
+- Only Administrators can add/remove users and roles.
 - Keep your `JWT_SECRET` private and back it up — changing it logs everyone out.
 - **Sign-in protection:** 5 wrong passwords for an email from the same IP locks that email from that IP
   for 15 minutes; 20 failures from one IP locks the IP. Nginx also limits login requests to about 10 per
@@ -222,9 +222,11 @@ You'll also need MongoDB running locally (`mongodb://localhost:27017`).
 - **Sessions:** changing or resetting a password, or changing someone's role, signs that user out of every
   device immediately. Admins can also sign a user out from **Settings → Users**, and anyone can use
   **Sign out other devices** from the account menu.
-- **No privilege escalation:** a non-admin who can manage users can only edit, reset, sign out or remove
-  users whose permissions they also hold. All of these actions are recorded in **Settings → Security →
-  Activity Log**.
+- **User management is Administrator-only.** Custom roles can't include *Manage users and roles*; to give
+  someone that ability, make them an Administrator. (Upgrading removes it from any existing custom roles.)
+  All user and role changes are recorded in **Settings → Security → Activity Log**.
+- **Account emails:** if SMTP is set up (Backup & Restore → Email), users are emailed when their account is
+  created, their password is reset or changed, or their role changes. Passwords are never included.
 - If you put the app behind a Cloudflare Tunnel, set `TRUSTED_PROXY` so lockouts use each visitor's real IP
   (otherwise every visitor appears to come from the tunnel).
 

@@ -350,6 +350,7 @@ const AUDIT_LABELS = {
   "role.update": "Edited role",
   "role.delete": "Deleted role",
   "login.unlock": "Unlocked sign-in",
+  "settings.account_notices": "Account emails setting",
 };
 
 function AuditLog() {
@@ -608,6 +609,7 @@ function EmailBackupCard() {
       const body = {
         enabled: cfg.enabled, smtp_host: cfg.smtp_host || "", smtp_port: Number(cfg.smtp_port || 587),
         smtp_username: cfg.smtp_username || "", use_tls: cfg.use_tls, from_address: cfg.from_address || "", to_address: cfg.to_address || "",
+        notify_users: cfg.notify_users !== false,
       };
       if (cfg.smtp_password) body.smtp_password = cfg.smtp_password;
       await api.put("/settings/email", body);
@@ -646,6 +648,13 @@ function EmailBackupCard() {
       <label className="flex items-center gap-2 cursor-pointer w-fit">
         <Switch checked={cfg.use_tls !== false} onCheckedChange={(v) => set("use_tls", v)} data-testid="email-tls-switch" />
         <span className="text-sm">Use STARTTLS (recommended for port 587; use port 465 for SSL)</span>
+      </label>
+      <label className="flex items-start gap-2 cursor-pointer w-fit">
+        <Switch checked={cfg.notify_users !== false} onCheckedChange={(v) => set("notify_users", v)} className="mt-0.5" data-testid="email-notify-users-switch" />
+        <span className="text-sm">
+          Email users when their account changes
+          <span className="block text-xs text-muted-foreground">New account, password reset, role change, or password changed. Uses these SMTP settings; passwords are never included.</span>
+        </span>
       </label>
       <div className="flex flex-wrap gap-3">
         <Button onClick={save} disabled={saving} className="bg-[#1E293B] hover:bg-[#0F172A]" data-testid="btn-save-email-cfg">

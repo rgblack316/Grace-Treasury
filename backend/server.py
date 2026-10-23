@@ -115,7 +115,7 @@ PERMISSION_LABELS = {
     "transactions.manage": "Add, edit, delete, import transactions and reconcile",
     "reports.view": "View, print and export reports",
     "settings.manage": "Manage accounts, funds, categories and payees",
-    "users.manage": "Manage users and roles",
+    "users.manage": "Manage users and roles (Administrators only)",
     "data.manage": "Back up and restore the database",
 }
 
@@ -149,6 +149,11 @@ def create_access_token(user_id: str, email: str, version: int = 0) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
+# Permissions that only Administrators hold; custom roles can never include them.
+ADMIN_ONLY_PERMISSIONS = {"users.manage"}
+ASSIGNABLE_PERMISSIONS = [p for p in ALL_PERMISSIONS if p not in ADMIN_ONLY_PERMISSIONS]
+
+
 async def resolve_permissions(user: dict):
     if user.get("role") == "admin":
         return list(ALL_PERMISSIONS), "Administrator"
@@ -156,7 +161,8 @@ async def resolve_permissions(user: dict):
     if user.get("role_id"):
         role = await db.roles.find_one({"id": user["role_id"]}, {"_id": 0})
     if role:
-        return list(role.get("permissions", [])), role.get("name", "")
+        perms = [p for p in role.get("permissions", []) if p not in ADMIN_ONLY_PERMISSIONS]
+        return perms, role.get("name", "")
     return [], user.get("role", "")
 
 
@@ -207,7 +213,11 @@ require_txn_view = require_permission("transactions.view")
 require_txn_manage = require_permission("transactions.manage")
 require_reports = require_permission("reports.view")
 require_settings = require_permission("settings.manage")
-require_users = require_permission("users.manage")
+async def require_users(user: dict = Depends(get_current_user)) -> dict:
+    """Managing users and roles is reserved for Administrators."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only an administrator can manage users and roles")
+    return user
 require_data = require_permission("data.manage")
 
 
@@ -245,7 +255,7 @@ async def audit(actor: Optional[dict], action: str, target: Optional[dict] = Non
     try:
         await db.audit_log.insert_one({
             "id": new_id(), "at": now_iso(), "action": action,
-            "actor_id": (actor or {}).get("id"), "actor_email": (actor or {}).get("email", ""),
+            "actor_id": (actor or {}).get("id"), "actor_email": (actor or {}).get("email", "") if actor else "System",
             "target_id": (target or {}).get("id"), "target_email": (target or {}).get("email") or (target or {}).get("name", ""),
             "details": details[:500], "ip": client_ip(request) if request else "",
         })
@@ -599,6 +609,7 @@ async def change_password(data: PasswordChangeInput, request: Request, user: dic
     }})
     version = await revoke_sessions(user["id"])
     await audit(user, "self.password_change", user, "Changed own password; other sessions signed out", request)
+    await notify_account_change("password_changed", user, user)
     updated = await db.users.find_one({"id": user["id"]})
     return {"token": create_access_token(user["id"], user["email"], version), "user": await shape_user(updated)}
 
@@ -613,7 +624,7 @@ async def sign_out_everywhere(request: Request, user: dict = Depends(get_current
 
 @api_router.get("/permissions")
 async def list_permissions(user: dict = Depends(require_users)):
-    return [{"key": k, "label": PERMISSION_LABELS[k]} for k in ALL_PERMISSIONS]
+    return [{"key": k, "label": PERMISSION_LABELS[k]} for k in ASSIGNABLE_PERMISSIONS]
 
 
 # ----------------------------- Security: sign-in activity (admins) -----------------------------
@@ -682,7 +693,7 @@ async def list_roles(user: dict = Depends(get_current_user)):
 
 @api_router.post("/roles")
 async def create_role(data: RoleInput, request: Request, user: dict = Depends(require_users)):
-    perms = [p for p in data.permissions if p in ALL_PERMISSIONS]
+    perms = [p for p in data.permissions if p in ASSIGNABLE_PERMISSIONS]
     ensure_can_grant(user, perms)
     doc = {"id": new_id(), "name": data.name.strip(), "permissions": perms, "is_system": False, "created_at": now_iso()}
     await db.roles.insert_one(doc)
@@ -697,7 +708,7 @@ async def update_role(role_id: str, data: RoleInput, request: Request, user: dic
         raise HTTPException(status_code=404, detail="Role not found")
     if role.get("is_system"):
         raise HTTPException(status_code=400, detail="The Administrator role cannot be modified")
-    perms = [p for p in data.permissions if p in ALL_PERMISSIONS]
+    perms = [p for p in data.permissions if p in ASSIGNABLE_PERMISSIONS]
     # must already hold everything the role grants now and after the change
     ensure_can_grant(user, list(set(perms) | set(role.get("permissions", []))))
     await db.roles.update_one({"id": role_id}, {"$set": {"name": data.name.strip(), "permissions": perms}})
@@ -755,6 +766,7 @@ async def create_user(data: UserCreate, request: Request, user: dict = Depends(r
     }
     await db.users.insert_one(doc)
     await audit(user, "user.create", doc, f"Role: {role.get('name') if role else 'none'}", request)
+    await notify_account_change("created", doc, user, role.get("name") if role else "none")
     return await shape_user(doc)
 
 
@@ -796,6 +808,10 @@ async def update_user(user_id: str, data: UserUpdate, request: Request, user: di
         await revoke_sessions(user_id)  # old sessions stop working immediately
     for action, details in events:
         await audit(user, action, target, details, request)
+        if action == "user.password_reset":
+            await notify_account_change("password_reset", target, user)
+        elif action == "user.role_change" and not is_self:
+            await notify_account_change("role_change", target, user, details)
     updated = await db.users.find_one({"id": user_id})
     return await shape_user(updated)
 
@@ -1990,7 +2006,7 @@ async def restore_backup(name: str, user: dict = Depends(require_admin)):
 DEFAULT_EMAIL_SETTINGS = {
     "id": "email", "enabled": False, "smtp_host": "", "smtp_port": 587,
     "smtp_username": "", "smtp_password": "", "use_tls": True,
-    "from_address": "", "to_address": "",
+    "from_address": "", "to_address": "", "notify_users": True,
 }
 
 
@@ -2003,6 +2019,7 @@ class EmailConfig(BaseModel):
     use_tls: bool = True
     from_address: str = ""
     to_address: str = ""
+    notify_users: bool = True
 
 
 async def get_email_settings() -> dict:
@@ -2039,6 +2056,51 @@ def _send_email_sync(cfg: dict, subject: str, body: str, att_name=None, att_byte
             s.send_message(msg)
 
 
+# ----------------------------- Account-change email notices -----------------------------
+NOTICE_TEXT = {
+    "created": ("{church} treasury: your account was created",
+                "{actor} created a Grace Treasury account for you ({email}) with the role: {detail}.\n\n"
+                "They will give you a temporary password. You'll be asked to choose your own the first time you sign in."),
+    "password_reset": ("{church} treasury: your password was reset",
+                       "{actor} reset the password for your Grace Treasury account ({email}).\n\n"
+                       "You have been signed out everywhere. Use the temporary password they give you, then choose a new one."),
+    "role_change": ("{church} treasury: your access changed",
+                    "{actor} changed your Grace Treasury role ({email}): {detail}.\n\nYou have been signed out and will need to sign in again."),
+    "password_changed": ("{church} treasury: your password was changed",
+                         "The password for your Grace Treasury account ({email}) was just changed, and other devices were signed out."),
+}
+
+
+_notice_tasks: set = set()
+
+
+async def notify_account_change(kind: str, target: dict, actor: Optional[dict] = None, detail: str = ""):
+    """Email the affected user about a change to their account, if SMTP is configured.
+    Never includes passwords; failures are logged and never block the action."""
+    to = (target or {}).get("email")
+    if not to:
+        return
+    cfg = await get_email_settings()
+    if not cfg.get("smtp_host") or cfg.get("notify_users", True) is False:
+        return
+    church = (await db.settings.find_one({"id": "church"}, {"_id": 0}) or {}).get("church_name") or "Church"
+    subject_t, body_t = NOTICE_TEXT[kind]
+    actor_name = (actor or {}).get("name") or (actor or {}).get("email") or "An administrator"
+    when = datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC")
+    fmt = {"church": church, "actor": actor_name, "email": to, "detail": detail}
+    body = body_t.format(**fmt) + f"\n\nWhen: {when}\n\nIf you didn't expect this, contact your church administrator right away."
+
+    async def _send():
+        try:
+            await asyncio.to_thread(_send_email_sync, {**cfg, "to_address": to}, subject_t.format(**fmt), body)
+            logger.info(f"Account notice '{kind}' emailed to {to}")
+        except Exception as e:
+            logger.error(f"Account notice '{kind}' to {to} failed: {e}")
+    task = asyncio.create_task(_send())  # don't make the admin wait on SMTP
+    _notice_tasks.add(task)
+    task.add_done_callback(_notice_tasks.discard)
+
+
 async def maybe_email_backup(fname: str):
     cfg = await get_email_settings()
     if not cfg.get("enabled") or not cfg.get("smtp_host") or not cfg.get("to_address"):
@@ -2071,13 +2133,16 @@ async def get_email_config(user: dict = Depends(require_data)):
         "use_tls": cfg.get("use_tls", True),
         "from_address": cfg.get("from_address", ""),
         "to_address": cfg.get("to_address", ""),
+        "notify_users": cfg.get("notify_users", True) is not False,
         "has_password": bool(cfg.get("smtp_password")),
     }
 
 
 @api_router.put("/settings/email")
-async def update_email_config(data: EmailConfig, user: dict = Depends(require_data)):
+async def update_email_config(data: EmailConfig, request: Request, user: dict = Depends(require_data)):
     existing = await get_email_settings()
+    if (existing.get("notify_users", True) is not False) != data.notify_users:
+        await audit(user, "settings.account_notices", None, "Turned on" if data.notify_users else "Turned off", request)
     doc = {
         "id": "email",
         "enabled": data.enabled,
@@ -2087,6 +2152,7 @@ async def update_email_config(data: EmailConfig, user: dict = Depends(require_da
         "use_tls": data.use_tls,
         "from_address": data.from_address.strip(),
         "to_address": data.to_address.strip(),
+        "notify_users": data.notify_users,
         "smtp_password": existing.get("smtp_password", "") if data.smtp_password in (None, "") else data.smtp_password,
     }
     await db.settings.update_one({"id": "email"}, {"$set": doc}, upsert=True)
@@ -2191,9 +2257,23 @@ async def seed_starter_data():
         await db.settings.insert_one({"id": "church", "church_name": "Your Church Name", "treasurer_name": "", "meeting_day": ""})
 
 
+async def strip_admin_only_permissions():
+    """Upgrade step: custom roles may no longer hold Administrator-only permissions."""
+    async for role in db.roles.find({"is_system": {"$ne": True}, "permissions": {"$in": list(ADMIN_ONLY_PERMISSIONS)}}, {"_id": 0}):
+        removed = sorted(set(role.get("permissions", [])) & ADMIN_ONLY_PERMISSIONS)
+        await db.roles.update_one({"id": role["id"]}, {"$pull": {"permissions": {"$in": removed}}})
+        await audit(None, "role.update", {"id": role["id"], "name": role.get("name", "")},
+                    f"removed: {', '.join(removed)} (now Administrator-only)")
+        logger.warning(f"Removed {removed} from role '{role.get('name')}' — user management is now Administrator-only")
+
+
 @app.on_event("startup")
 async def startup():
     await ensure_indexes()
+    try:
+        await strip_admin_only_permissions()
+    except Exception as e:
+        logger.error(f"Role permission upgrade failed: {e}")
     try:
         await get_backup_settings()
         await reschedule_backup()
