@@ -261,6 +261,21 @@ You'll also need MongoDB running locally (`mongodb://localhost:27017`).
 - **MongoDB** sits on an internal-only Docker network (`database`): only the backend can reach it, and it has
   no internet access. No database port is published on the host.
 
+### Database password (MongoDB authentication)
+
+New installs made with `install.sh` require a MongoDB login from the start: an administrator account
+for maintenance, and the app's own account with read/write access to its database only. The passwords
+are generated into `.env`.
+
+**Existing installs:** run `./enable-db-auth.sh` once, after upgrading. **Try it on a copy or snapshot
+of your server first.** It makes a safety backup, creates the accounts while the database is still open,
+checks them, then restarts with login required. If any check fails it restores `.env` and restarts the old
+way. Use `./enable-db-auth.sh --check` to verify, and `--disable` to turn it off.
+
+> ⚠️ Don't add the `MONGO_*` passwords to `.env` by hand on an existing install. MongoDB only creates
+> its accounts on an empty database, so the app would be locked out of its data. Keep `.env` backed up:
+> without it, the app can't open its database. (In-app backups don't contain these passwords.)
+
 If you point a reverse proxy or tunnel **directly at the frontend container** (for example
 `http://frontend:80` on a shared Docker network), change it to port **8080**. Pointing at
 `http://localhost:8080` or the server's IP, as most setups do, needs no change.

@@ -208,7 +208,30 @@ if [ ! -f .env ]; then
   # safe default for a first-run installation; change it for a remote server.
   sed -i 's|^CORS_ORIGINS=.*|CORS_ORIGINS=http://localhost:8080|' .env
 
-  log ".env created with a generated JWT secret."
+  # New database: MongoDB requires a login from day one. It creates the administrator
+  # account itself, and mongo-init/ adds the app's own limited account.
+  # BUT Docker keeps a project's database volume even after its folder is deleted. If one
+  # from an earlier install at this path still exists, its data has no accounts, so turning
+  # login on would lock the app out. In that case leave it off (enable-db-auth.sh can add it).
+  MONGO_VOLUME="$(basename "$INSTALL_DIR" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')_mongo_data"
+  if docker_cmd volume inspect "$MONGO_VOLUME" >/dev/null 2>&1; then
+    log "Found an existing database ($MONGO_VOLUME) from an earlier install; keeping its data."
+    log "Database passwords are OFF for it. To turn them on later, run ./enable-db-auth.sh."
+    chmod 600 .env
+    log ".env created with a generated JWT secret."
+  else
+    hexpw() { head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+    {
+      echo
+      echo "# MongoDB accounts (created automatically on this new database). Keep .env backed up."
+      echo "MONGO_ROOT_USERNAME=gtadmin"
+      echo "MONGO_ROOT_PASSWORD=$(hexpw)"
+      echo "MONGO_APP_USERNAME=treasury"
+      echo "MONGO_APP_PASSWORD=$(hexpw)"
+    } >> .env
+    chmod 600 .env
+    log ".env created with a generated JWT secret and database passwords."
+  fi
 else
   log ".env already exists. Leaving it unchanged."
 fi
