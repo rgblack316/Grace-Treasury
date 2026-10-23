@@ -12,6 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from bson import ObjectId
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import logging
+from contextlib import asynccontextmanager
 import csv
 import json
 import glob
@@ -125,7 +126,14 @@ PERMISSION_LABELS = {
     "data.manage": "Back up and restore the database (Administrators only)",
 }
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await startup()
+    yield
+    await shutdown()
+
+
+app = FastAPI(lifespan=lifespan)
 api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO)
@@ -133,13 +141,18 @@ logger = logging.getLogger(__name__)
 
 
 # ----------------------------- Auth helpers -----------------------------
+BCRYPT_MAX_BYTES = 72  # bcrypt only uses the first 72 bytes of a password
+
+
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    return bcrypt.hashpw(password.encode("utf-8")[:BCRYPT_MAX_BYTES], bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
+    # Older bcrypt versions silently used only the first 72 bytes; do the same so existing
+    # long passwords keep working (bcrypt 5 raises an error instead).
     try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        return bcrypt.checkpw(plain.encode("utf-8")[:BCRYPT_MAX_BYTES], hashed.encode("utf-8"))
     except Exception:
         return False
 
@@ -337,6 +350,8 @@ async def ensure_can_assign_role(actor: dict, role_id: Optional[str]):
 
 
 def validate_strong_password(pw: str):
+    if len(pw.encode("utf-8")) > BCRYPT_MAX_BYTES:
+        raise HTTPException(status_code=400, detail=f"Password must be {BCRYPT_MAX_BYTES} characters or fewer.")
     if (
         len(pw) < 12
         or not re.search(r"[A-Z]", pw)
@@ -2489,7 +2504,6 @@ async def seal_stored_secrets():
         logger.info("Encrypted the stored SMTP password")
 
 
-@app.on_event("startup")
 async def startup():
     await ensure_indexes()
     try:
@@ -2511,6 +2525,10 @@ async def startup():
         logger.error(f"Backup scheduler failed to start: {e}")
 
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
+async def shutdown():
+    try:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+    except Exception:
+        pass
     client.close()
