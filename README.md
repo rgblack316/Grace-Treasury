@@ -174,6 +174,8 @@ Set these in your `.env` file (see `env.example`):
 | `DB_NAME` | ✅ | Database name (default `church_treasury`). |
 | `CORS_ORIGINS` | ✅ | Allowed origin(s) for the frontend, e.g. `http://localhost:8080`. |
 | `TRUSTED_PROXY` | optional | IP or CIDR range that **cloudflared** (or another reverse proxy) connects from. Only requests from here may report the visitor's real IP via `CF-Connecting-IP`. Default `172.16.0.0/12` fits cloudflared running in the same VM as the app. |
+| `SESSION_IDLE_HOURS` | optional | Sign-in lasts this long without activity (default `12`). Active users are renewed automatically. |
+| `SESSION_MAX_DAYS` | optional | Everyone re-enters their password at least this often, even if active (default `7`). |
 | `BACKUP_DIR` | optional | Folder (inside the backend container) where nightly backups are written. The Compose file mounts `./backups` on your host to `/data/backups`. |
 
 > **Fully offline:** Everything — including receipt images (stored in MongoDB GridFS) — lives in your
@@ -219,6 +221,9 @@ You'll also need MongoDB running locally (`mongodb://localhost:27017`).
 - **Temporary passwords:** passwords set by a user manager (new users and resets) must be changed at the
   next sign-in, so only the user knows their final password. Everyone can change their own password from
   the account menu.
+- **Session length:** you stay signed in while you're using the app; after 12 hours without activity you're
+  signed out, and everyone re-enters their password at least every 7 days (see `SESSION_IDLE_HOURS` /
+  `SESSION_MAX_DAYS`).
 - **Sessions:** changing or resetting a password, or changing someone's role, signs that user out of every
   device immediately. Admins can also sign a user out from **Settings → Users**, and anyone can use
   **Sign out other devices** from the account menu.

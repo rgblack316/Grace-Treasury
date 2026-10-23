@@ -11,7 +11,12 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (r) => r,
+  (r) => {
+    // While you're active, the server hands back a fresh session token about once an hour.
+    const fresh = r.headers?.["x-session-token"];
+    if (fresh && localStorage.getItem("ct_token")) localStorage.setItem("ct_token", fresh);
+    return r;
+  },
   (err) => {
     if (err.response?.status === 401 && !err.config.url.includes("/auth/login")) {
       const detail = err.response?.data?.detail;
