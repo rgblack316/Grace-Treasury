@@ -129,6 +129,14 @@ if [ ! -w "$BACKUP_DIR" ] 2>/dev/null || ! mkdir -p "$DB_BACKUP_DIR" 2>/dev/null
   sudo chown -R "$(id -u):$(id -g)" "$BACKUP_DIR"
 fi
 
+# Older installs have no SETUP_CODE; add one so a wiped/empty database can't be claimed by
+# a stranger. It is only used before the first Administrator exists.
+if ! grep -qE '^SETUP_CODE=.+' .env; then
+  raw="$(head -c 1024 /dev/urandom | LC_ALL=C tr -dc 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' | cut -c1-16)"
+  printf '\n# One-time code for creating the first Administrator\nSETUP_CODE=%s\n' "${raw:0:4}-${raw:4:4}-${raw:8:4}-${raw:12:4}" >> .env
+  log "Added a SETUP_CODE to .env (only needed if the database is ever empty)."
+fi
+
 # Read DB_NAME from .env without sourcing the file as shell code.
 DB_NAME="$(awk -F= '$1 == "DB_NAME" {print substr($0, index($0,"=")+1); exit}' .env)"
 DB_NAME="${DB_NAME:-church_treasury}"

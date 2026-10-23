@@ -11,8 +11,8 @@ installs it starts with a clean, empty database and creates its own administrato
 
 ## ✨ Features
 
-- **First-run setup wizard** — no default/shared credentials. The first person to open the app
-  creates the administrator (treasurer) account with a strong password (12+ characters, upper &
+- **First-run setup wizard** — no default/shared credentials. Using the one-time setup code from
+  installation, the first person to open the app creates the administrator (treasurer) account with a strong password (12+ characters, upper &
   lower case, a number, and a symbol).
 - **Multiple bank accounts** — add, rename, set opening balances, and deactivate accounts. Account
   numbers are shown masked (e.g. `*1234`).
@@ -154,7 +154,9 @@ docker compose up -d --build
 
 ### 5. Open the app
 Visit **http://localhost:8080** (or your server's IP). On first launch you'll be guided through
-creating your administrator account. Then add your bank accounts and funds under **Settings**.
+creating your administrator account. You'll need the **setup code**: `install.sh` shows it at the end
+and saves it as `SETUP_CODE` in `.env` (for a manual install, set your own there, or find the generated
+one with `docker compose logs backend`). Then add your bank accounts and funds under **Settings**.
 
 To stop:
 ```bash
@@ -211,7 +213,9 @@ You'll also need MongoDB running locally (`mongodb://localhost:27017`).
 
 ## 🔐 First-run & security notes
 
-- There are **no default credentials**. The first visit forces you to create an admin account.
+- There are **no default credentials**. The first visit forces you to create an admin account, which
+  requires the one-time **setup code** (`SETUP_CODE` in `.env`), so a stranger who reaches a fresh install
+  can't claim it. Wrong codes are rate-limited, and only one first admin can ever be created.
 - Passwords must be at least **12 characters** and include **uppercase, lowercase, a number, and a symbol**.
 - Only Administrators can add/remove users and roles.
 - Keep your `JWT_SECRET` private and back it up — changing it logs everyone out.

@@ -44,8 +44,8 @@ export function AuthProvider({ children }) {
     return data.user;
   };
 
-  const setup = async (name, email, password) => {
-    const { data } = await api.post("/auth/setup", { name, email, password });
+  const setup = async (name, email, password, setupCode) => {
+    const { data } = await api.post("/auth/setup", { name, email, password, setup_code: setupCode });
     localStorage.setItem("ct_token", data.token);
     setNeedsSetup(false);
     setUser(data.user);

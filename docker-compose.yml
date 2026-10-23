@@ -16,6 +16,8 @@ services:
       - MONGO_URL=mongodb://mongo:27017
       - DB_NAME=${DB_NAME:-church_treasury}
       - JWT_SECRET=${JWT_SECRET}
+      # One-time code required to create the first Administrator (see .env)
+      - SETUP_CODE=${SETUP_CODE:-}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8080}
       - BACKUP_DIR=/data/backups
     volumes:

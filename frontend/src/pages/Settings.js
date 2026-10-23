@@ -566,7 +566,7 @@ function SecurityTab() {
             )}
             {groups.map((g) => (
               <tr key={`${g.email}|${g.ip}`} className="border-b border-[#F4F0E8]" data-testid={`security-row-${g.email}-${g.ip}`}>
-                <td className="py-2 pr-3 break-all">{g.email}</td>
+                <td className="py-2 pr-3 break-all">{g.email === "__setup__" ? <span className="italic">Setup code attempts</span> : g.email}</td>
                 <td className="py-2 pr-3 font-mono text-xs whitespace-nowrap" title={g.user_agent}>{g.ip}</td>
                 <td className="py-2 pr-3 text-right font-mono">{g.failures}</td>
                 <td className="py-2 pl-2 pr-3 whitespace-nowrap">{when(g.last_attempt)}</td>
