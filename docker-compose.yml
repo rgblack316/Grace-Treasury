@@ -4,8 +4,11 @@ services:
     restart: unless-stopped
     volumes:
       - mongo_data:/data/db
+    # Only the backend can reach the database, and it has no internet access.
     networks:
-      - treasury
+      - database
+    security_opt:
+      - no-new-privileges:true
 
   backend:
     build: ./backend
@@ -21,8 +24,21 @@ services:
     volumes:
       # Nightly database backups land here. Change the left side to any folder you like.
       - ./backups:/data/backups
+    # "treasury" for the web side (and sending email); "database" to reach MongoDB.
     networks:
       - treasury
+      - database
+    security_opt:
+      - no-new-privileges:true
+    # The startup script needs only these, to hand the backup folder to the app user and
+    # switch to it; the app itself then runs unprivileged.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
 
   frontend:
     build:
@@ -38,9 +54,14 @@ services:
     depends_on:
       - backend
     ports:
-      - "8080:80"
+      # Same address as before (http://<server>:8080); nginx now listens on 8080 inside the container.
+      - "8080:8080"
     networks:
       - treasury
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   mongo_data:
@@ -48,3 +69,7 @@ volumes:
 networks:
   treasury:
     driver: bridge
+  # internal: no route to the outside world; only containers on it can connect
+  database:
+    driver: bridge
+    internal: true
