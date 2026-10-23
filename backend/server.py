@@ -2074,11 +2074,26 @@ class BackupSettings(BaseModel):
     retention: int = 14
 
 
-def _safe_backup_name(name: str) -> str:
-    base = os.path.basename(name)
-    if not base.startswith(BACKUP_PREFIX) or not base.endswith(".json") or "/" in name or ".." in name:
+# Exactly the names this app writes: church-treasury-backup-YYYYMMDD-HHMMSS[-enc].json
+BACKUP_NAME_RE = re.compile(r"church-treasury-backup-\d{8}-\d{6}(-enc)?\.json")
+
+
+def find_backup(name: str) -> tuple:
+    """Find a backup by name among the files actually in BACKUP_DIR.
+
+    The request's name is only compared against the directory listing; the name and path
+    returned come from the listing itself, so request data never becomes a file path. The
+    match must be a regular file directly inside BACKUP_DIR (no symlinks, no subfolders)."""
+    if not isinstance(name, str) or not BACKUP_NAME_RE.fullmatch(name):
         raise HTTPException(status_code=400, detail="Invalid backup file name")
-    return base
+    root = os.path.realpath(BACKUP_DIR)
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if entry.name == name and entry.is_file(follow_symlinks=False):
+                full = os.path.realpath(entry.path)
+                if os.path.dirname(full) == root:
+                    return entry.name, full
+    raise HTTPException(status_code=404, detail="Backup not found")
 
 
 def secure_backup_dir():
@@ -2189,10 +2204,7 @@ async def run_backup_now(request: Request, user: dict = Depends(require_data)):
 
 @api_router.get("/backups/{name}/download")
 async def download_backup(name: str, request: Request, user: dict = Depends(require_data)):
-    base = _safe_backup_name(name)
-    full = os.path.join(BACKUP_DIR, base)
-    if not os.path.exists(full):
-        raise HTTPException(status_code=404, detail="Backup not found")
+    base, full = find_backup(name)
     with open(full, "rb") as f:
         content = f.read()
     await audit(user, "backup.download", None, base, request)
@@ -2201,20 +2213,20 @@ async def download_backup(name: str, request: Request, user: dict = Depends(requ
 
 @api_router.delete("/backups/{name}")
 async def delete_backup(name: str, request: Request, user: dict = Depends(require_data)):
-    base = _safe_backup_name(name)
-    full = os.path.join(BACKUP_DIR, base)
-    if os.path.exists(full):
-        os.remove(full)
-        await audit(user, "backup.delete", None, base, request)
+    try:
+        base, full = find_backup(name)
+    except HTTPException as e:
+        if e.status_code == 404:
+            return {"ok": True}  # already gone
+        raise
+    os.remove(full)
+    await audit(user, "backup.delete", None, base, request)
     return {"ok": True}
 
 
 @api_router.post("/backups/{name}/restore")
 async def restore_backup(name: str, request: Request, data: Optional[RestoreInput] = None, user: dict = Depends(require_admin)):
-    base = _safe_backup_name(name)
-    full = os.path.join(BACKUP_DIR, base)
-    if not os.path.exists(full):
-        raise HTTPException(status_code=404, detail="Backup not found")
+    base, full = find_backup(name)
     try:
         with open(full) as f:
             payload = json.load(f)
@@ -2330,7 +2342,7 @@ async def maybe_email_backup(fname: str):
         logger.warning(f"Not emailing {fname}: backups are only emailed when encrypted. Set a backup passphrase.")
         return
     try:
-        full = os.path.join(BACKUP_DIR, fname)
+        fname, full = find_backup(fname)
         with open(full, "rb") as f:
             data = f.read()
         church = await db.settings.find_one({"id": "church"}, {"_id": 0}) or {}
@@ -2402,24 +2414,21 @@ async def send_test_email(user: dict = Depends(require_data)):
 
 @api_router.post("/backups/{name}/email")
 async def email_backup(name: str, request: Request, user: dict = Depends(require_data)):
-    base = _safe_backup_name(name)
-    if not os.path.exists(os.path.join(BACKUP_DIR, base)):
-        raise HTTPException(status_code=404, detail="Backup not found")
+    base, full = find_backup(name)
     if not base.endswith("-enc.json"):
         raise HTTPException(status_code=400, detail="Only encrypted backups can be emailed. Set a backup passphrase, then use Back Up Now.")
     cfg = await get_email_settings()
     if not cfg.get("smtp_host") or not cfg.get("to_address"):
         raise HTTPException(status_code=400, detail="Email is not configured. Set it up under Email Backups first.")
     try:
-        await maybe_email_backup_force(base, cfg)
+        await maybe_email_backup_force(base, full, cfg)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not send email: {e}")
     await audit(user, "backup.email", None, f"{base} → {cfg.get('to_address')}", request)
     return {"ok": True}
 
 
-async def maybe_email_backup_force(fname: str, cfg: dict):
-    full = os.path.join(BACKUP_DIR, fname)
+async def maybe_email_backup_force(fname: str, full: str, cfg: dict):
     with open(full, "rb") as f:
         data = f.read()
     church = await db.settings.find_one({"id": "church"}, {"_id": 0}) or {}
