@@ -34,11 +34,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import TransactionDialog from "@/components/TransactionDialog";
+import TransactionDialog, { PAYMENT_METHODS } from "@/components/TransactionDialog";
 import ImportDialog from "@/components/ImportDialog";
 import { Search, Pencil, Trash2, Plus, X, Upload, Paperclip, Scale, Ban, RotateCcw } from "lucide-react";
 
 const ALL = "__all__";
+const PAYMENT_LABELS = Object.fromEntries(PAYMENT_METHODS.map((m) => [m.id, m.label]));
 
 export default function Transactions() {
   const { can } = useAuth();
@@ -270,7 +271,7 @@ export default function Transactions() {
               <TableHead>Type</TableHead>
               <TableHead>Account</TableHead>
               <TableHead>Payee / Details</TableHead>
-              <TableHead>Check #</TableHead>
+              <TableHead>Method / Check #</TableHead>
               <TableHead>Category</TableHead>
               <TableHead className="text-right">Amount</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -299,7 +300,11 @@ export default function Transactions() {
                     {maps.payee[t.payee_id] || t.memo || "—"}
                   </span>
                 </TableCell>
-                <TableCell className="font-mono text-sm">{t.check_number || "—"}</TableCell>
+                <TableCell className="text-sm whitespace-nowrap">
+                  {t.type === "expense" && t.payment_method ? (
+                    <span>{PAYMENT_LABELS[t.payment_method] || t.payment_method}{t.check_number ? <span className="font-mono"> #{t.check_number}</span> : null}</span>
+                  ) : <span className="font-mono">{t.check_number || "—"}</span>}
+                </TableCell>
                 <TableCell className="text-sm">{maps.cat[t.category_id] || "—"}</TableCell>
                 <TableCell className="text-right font-mono font-medium whitespace-nowrap">{signed(t)}</TableCell>
                 <TableCell className="text-right whitespace-nowrap">

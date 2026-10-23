@@ -30,6 +30,18 @@ const TYPES = [
 ];
 
 const NONE = "__none__";
+
+// How an expense was paid. Keep in sync with PAYMENT_METHODS in backend/server.py.
+export const PAYMENT_METHODS = [
+  { id: "check", label: "Check" },
+  { id: "debit", label: "Debit Card" },
+  { id: "credit", label: "Credit Card" },
+  { id: "ach", label: "ACH / Bank Draft" },
+  { id: "online", label: "Online Payment" },
+  { id: "wire", label: "Wire Transfer" },
+  { id: "cash", label: "Cash" },
+  { id: "other", label: "Other" },
+];
 const ACCEPT = "image/jpeg,image/png,image/heic,image/heif,image/webp,application/pdf";
 
 export default function TransactionDialog({ open, onOpenChange, editing, onSaved }) {
@@ -67,6 +79,7 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
         to_account_id: editing.to_account_id || "",
         amount: editing.amount,
         payee_id: editing.payee_id || "",
+        payment_method: editing.payment_method || (editing.type === "expense" && editing.check_number ? "check" : ""),
         check_number: editing.check_number || "",
         category_id: editing.category_id || "",
         fund_id: editing.fund_id || "",
@@ -82,7 +95,7 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
       api.get(`/transactions/${editing.id}/attachments`).then((r) => setExisting(r.data)).catch(() => {});
     } else {
       setType("income");
-      setForm({ date: todayISO(), amount: "", check_number: "", memo: "" });
+      setForm({ date: todayISO(), amount: "", payment_method: "", check_number: "", memo: "" });
       setSplitMode(false);
       setSplits([]);
     }
@@ -148,6 +161,7 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
     if (!form.amount || Number(form.amount) <= 0) return toast.error("Enter an amount greater than zero");
     if (type === "transfer" && !form.to_account_id) return toast.error("Choose a destination account");
     if (type === "transfer" && form.to_account_id === form.account_id) return toast.error("Source and destination must differ");
+    if (type === "expense" && !form.payment_method) return toast.error("Choose how this expense was paid");
 
     let fundSplits = null;
     if (type !== "transfer" && splitMode) {
@@ -171,7 +185,8 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
       to_account_id: type === "transfer" ? form.to_account_id : null,
       amount: Number(form.amount),
       payee_id: form.payee_id || null,
-      check_number: form.check_number || "",
+      payment_method: type === "expense" ? form.payment_method : "",
+      check_number: type === "expense" && form.payment_method === "check" ? (form.check_number || "").trim() : "",
       category_id: form.category_id || null,
       fund_id: type !== "transfer" && !splitMode ? (form.fund_id || null) : null,
       fund_splits: fundSplits,
@@ -274,10 +289,26 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
           {type === "expense" && (
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>Check #</Label>
-                <Input value={form.check_number || ""} onChange={(e) => set("check_number", e.target.value)} placeholder="e.g. 4046" className="font-mono" data-testid="input-check-number" />
+                <Label>Payment Method</Label>
+                <Select
+                  value={form.payment_method || ""}
+                  onValueChange={(v) => setForm((f) => ({ ...f, payment_method: v, check_number: v === "check" ? f.check_number : "" }))}
+                >
+                  <SelectTrigger data-testid="select-payment-method"><SelectValue placeholder="How was it paid?" /></SelectTrigger>
+                  <SelectContent>
+                    {PAYMENT_METHODS.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-              <div className="space-y-1.5">
+              {form.payment_method === "check" ? (
+                <div className="space-y-1.5">
+                  <Label>Check #</Label>
+                  <Input value={form.check_number || ""} onChange={(e) => set("check_number", e.target.value)} placeholder="e.g. 4046" className="font-mono" data-testid="input-check-number" />
+                </div>
+              ) : <div />}
+              <div className="space-y-1.5 col-span-2">
                 <Label>Payee</Label>
                 <Select value={form.payee_id || ""} onValueChange={(v) => set("payee_id", v)}>
                   <SelectTrigger data-testid="select-payee"><SelectValue placeholder="Choose payee" /></SelectTrigger>

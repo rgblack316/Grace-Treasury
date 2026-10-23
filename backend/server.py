@@ -59,6 +59,48 @@ EXT_FOR_TYPE = {
 }
 
 
+# ----------------------------- Expense payment methods -----------------------------
+# How an expense left the bank account. Only "check" uses a check number.
+PAYMENT_METHODS = {
+    "check": "Check",
+    "debit": "Debit Card",
+    "credit": "Credit Card",
+    "ach": "ACH / Bank Draft",
+    "online": "Online Payment",
+    "wire": "Wire Transfer",
+    "cash": "Cash",
+    "other": "Other",
+}
+PAYMENT_METHOD_ALIASES = {
+    "chk": "check", "cheque": "check", "debit card": "debit", "credit card": "credit",
+    "ach / bank draft": "ach", "bank draft": "ach", "draft": "ach", "eft": "ach",
+    "online payment": "online", "wire transfer": "wire",
+}
+
+
+def normalize_payment_method(value: Optional[str]) -> str:
+    """Map a label or alias (e.g. 'Debit Card', 'chk') to a PAYMENT_METHODS key; '' if unknown/blank."""
+    v = (value or "").strip().lower()
+    if v in PAYMENT_METHODS:
+        return v
+    if v in PAYMENT_METHOD_ALIASES:
+        return PAYMENT_METHOD_ALIASES[v]
+    for key, label in PAYMENT_METHODS.items():
+        if v == label.lower():
+            return key
+    return ""
+
+
+def effective_payment_method(txn: dict) -> str:
+    """Payment method for an expense; older entries without one are treated as checks if they carry a check number."""
+    if txn.get("type") != "expense":
+        return ""
+    pm = txn.get("payment_method") or ""
+    if not pm and (txn.get("check_number") or "").strip():
+        pm = "check"
+    return pm
+
+
 # ----------------------------- Permissions -----------------------------
 ALL_PERMISSIONS = [
     "transactions.view",
@@ -284,6 +326,7 @@ class TransactionInput(BaseModel):
     to_account_id: Optional[str] = None
     amount: float
     payee_id: Optional[str] = None
+    payment_method: Optional[str] = ""  # expenses only — see PAYMENT_METHODS
     check_number: Optional[str] = ""
     category_id: Optional[str] = None
     fund_id: Optional[str] = None
@@ -686,7 +729,32 @@ async def list_transactions(
             counts[f["transaction_id"]] = counts.get(f["transaction_id"], 0) + 1
     for t in items:
         t["attachment_count"] = counts.get(t["id"], 0)
+        t["payment_method"] = effective_payment_method(t)
     return items
+
+
+@api_router.get("/payment-methods")
+async def list_payment_methods(user: dict = Depends(get_current_user)):
+    return [{"id": k, "label": v} for k, v in PAYMENT_METHODS.items()]
+
+
+def normalize_txn_payment(data: TransactionInput) -> dict:
+    """Validate the payment method and keep the check number only for checks."""
+    doc = data.model_dump()
+    if data.type == "expense":
+        raw = (data.payment_method or "").strip()
+        pm = normalize_payment_method(raw)
+        if raw and not pm:
+            raise HTTPException(status_code=400, detail="Choose a valid payment method")
+        if not pm:
+            # older API clients: treat as a check when a check number is given
+            pm = "check" if (data.check_number or "").strip() else "other"
+        doc["payment_method"] = pm
+        doc["check_number"] = (data.check_number or "").strip() if pm == "check" else ""
+    else:
+        doc["payment_method"] = ""
+        doc["check_number"] = ""
+    return doc
 
 
 def validate_fund_allocation(data: TransactionInput):
@@ -706,7 +774,7 @@ async def create_transaction(data: TransactionInput, user: dict = Depends(requir
     if data.type == "transfer" and not data.to_account_id:
         raise HTTPException(status_code=400, detail="Transfer requires a destination account")
     validate_fund_allocation(data)
-    doc = data.model_dump()
+    doc = normalize_txn_payment(data)
     doc["id"] = new_id()
     doc["created_at"] = now_iso()
     doc["created_by"] = user["id"]
@@ -720,7 +788,7 @@ async def update_transaction(txn_id: str, data: TransactionInput, user: dict = D
     if not existing:
         raise HTTPException(status_code=404, detail="Transaction not found")
     validate_fund_allocation(data)
-    await db.transactions.update_one({"id": txn_id}, {"$set": data.model_dump()})
+    await db.transactions.update_one({"id": txn_id}, {"$set": normalize_txn_payment(data)})
     updated = await db.transactions.find_one({"id": txn_id}, {"_id": 0})
     return updated
 
@@ -857,7 +925,7 @@ async def delete_attachment(file_id: str, user: dict = Depends(require_txn_manag
 
 
 # ----------------------------- CSV import -----------------------------
-IMPORT_COLUMNS = ["Date", "Type", "Account", "To Account", "Amount", "Check#", "Payee", "Category", "Fund", "Memo"]
+IMPORT_COLUMNS = ["Date", "Type", "Account", "To Account", "Amount", "Payment Method", "Check#", "Payee", "Category", "Fund", "Memo"]
 
 
 @api_router.get("/import/template")
@@ -865,9 +933,9 @@ async def import_template(user: dict = Depends(require_txn_manage)):
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(IMPORT_COLUMNS)
-    writer.writerow(["2026-06-07", "income", "*1234", "", "1420.10", "", "", "Deposit", "General Fund", "Sunday offering"])
-    writer.writerow(["2026-06-03", "expense", "*1234", "", "144.76", "4035", "Frontier Communications", "Utilities", "General Fund", "Internet/Phone Service"])
-    writer.writerow(["2026-06-15", "transfer", "*1234", "*5678", "500.00", "", "", "", "", "Move to savings"])
+    writer.writerow(["2026-06-07", "income", "*1234", "", "1420.10", "", "", "", "Deposit", "General Fund", "Sunday offering"])
+    writer.writerow(["2026-06-03", "expense", "*1234", "", "144.76", "Check", "4035", "Frontier Communications", "Utilities", "General Fund", "Internet/Phone Service"])
+    writer.writerow(["2026-06-15", "transfer", "*1234", "*5678", "500.00", "", "", "", "", "", "Move to savings"])
     out.seek(0)
     return Response(
         content=out.getvalue(),
@@ -933,6 +1001,22 @@ async def import_transactions(file: UploadFile = File(...), user: dict = Depends
             errors.append({"row": i, "reason": "Amount must be greater than zero"})
             continue
 
+        # payment method (expenses only). Optional column: blank = Check when a Check# is given, else Other.
+        payment_method = ""
+        check_no = (row.get("Check#") or "").strip()
+        if ttype == "expense":
+            raw_pm = (row.get("Payment Method") or "").strip()
+            payment_method = normalize_payment_method(raw_pm)
+            if raw_pm and not payment_method:
+                errors.append({"row": i, "reason": f"Invalid Payment Method '{raw_pm}' (use {', '.join(PAYMENT_METHODS.values())})"})
+                continue
+            if not payment_method:
+                payment_method = "check" if check_no else "other"
+            if payment_method != "check":
+                check_no = ""
+        else:
+            check_no = ""
+
         to_acc_id = None
         if ttype == "transfer":
             to_acc_id = resolve_account(row.get("To Account"))
@@ -980,7 +1064,7 @@ async def import_transactions(file: UploadFile = File(...), user: dict = Depends
         docs.append({
             "id": new_id(), "type": ttype, "date": d, "account_id": acc_id,
             "to_account_id": to_acc_id, "amount": amount,
-            "payee_id": payee_id, "check_number": (row.get("Check#") or "").strip(),
+            "payee_id": payee_id, "payment_method": payment_method, "check_number": check_no,
             "category_id": category_id, "fund_id": fund_id,
             "memo": (row.get("Memo") or "").strip(), "cleared": False,
             "created_at": now_iso(), "created_by": user["id"],
@@ -1186,12 +1270,17 @@ async def build_report(start: str, end: str, account_ids: List[str]):
             eff = await signed_amount_for_account(t, acc["id"])
             if eff < 0:
                 label_payee = payees.get(t.get("payee_id"), "")
+                pm = effective_payment_method(t)
+                txn_type_label = PAYMENT_METHODS.get(pm, "")
                 if t["type"] == "transfer":
                     dest = account_names.get(t.get("to_account_id"), {})
                     label_payee = f"Transfer to {dest.get('mask') or dest.get('name', 'account')}"
+                    txn_type_label = "Transfer"
                 expenses.append({
                     "date": t["date"],
-                    "check_number": t.get("check_number", ""),
+                    "payment_method": pm,
+                    "transaction_type": txn_type_label,
+                    "check_number": t.get("check_number", "") if pm == "check" else "",
                     "payee": label_payee,
                     "amount": round(-eff, 2),
                     "memo": t.get("memo", ""),
@@ -1327,13 +1416,13 @@ async def treasurer_report_pdf(
 
         # Expenses
         elems.append(Paragraph("Expenses", label))
-        exp_data = [["Date", "Check #", "Payee", "Memo / Reason", "Amount"]]
+        exp_data = [["Date", "Type", "Check #", "Payee", "Memo / Reason", "Amount"]]
         for e in acc["expenses"]:
-            exp_data.append([fmt_date(e["date"]), e["check_number"] or "", e["payee"] or "", e["memo"] or "", money(e["amount"])])
+            exp_data.append([fmt_date(e["date"]), e.get("transaction_type") or "", e["check_number"] or "", e["payee"] or "", e["memo"] or "", money(e["amount"])])
         if len(exp_data) == 1:
-            exp_data.append(["", "", "No expenses", "", ""])
-        exp_data.append(["", "", "", "Total Expenses", money(acc["total_expenses"])])
-        t = Table(exp_data, colWidths=[0.75 * inch, 0.7 * inch, 2.2 * inch, 2.45 * inch, 0.9 * inch])
+            exp_data.append(["", "", "", "No expenses", "", ""])
+        exp_data.append(["", "", "", "", "Total Expenses", money(acc["total_expenses"])])
+        t = Table(exp_data, colWidths=[0.75 * inch, 1.05 * inch, 0.6 * inch, 1.85 * inch, 1.85 * inch, 0.9 * inch])
         t.setStyle(_table_style(navy, len(exp_data)))
         elems.append(t)
 
