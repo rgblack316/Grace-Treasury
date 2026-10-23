@@ -227,8 +227,19 @@ You'll also need MongoDB running locally (`mongodb://localhost:27017`).
   All user and role changes are recorded in **Settings → Security → Activity Log**.
 - **Account emails:** if SMTP is set up (Backup & Restore → Email), users are emailed when their account is
   created, their password is reset or changed, or their role changes. Passwords are never included.
-- If you put the app behind a Cloudflare Tunnel, set `TRUSTED_PROXY` so lockouts use each visitor's real IP
-  (otherwise every visitor appears to come from the tunnel).
+- **Browser protections:** nginx sends a strict Content Security Policy (only the app's own scripts, styles,
+  fonts and API), refuses to be shown inside other sites, and sends `nosniff`, `Referrer-Policy: no-referrer`
+  and a `Permissions-Policy` that turns off camera, microphone and location. Fonts are bundled with the app,
+  so it makes no requests to outside services.
+- **HTTPS (HSTS):** turn this on in **Cloudflare** (SSL/TLS → Edge Certificates → HTTP Strict Transport
+  Security), not in the app, so local `http://` access on your network keeps working. Suggested: max-age
+  1 month to start, *Include subdomains* off unless every subdomain uses HTTPS, *Preload* off, *No-Sniff* on.
+  Also enable **Always Use HTTPS**.
+- **Cloudflare Tunnel:** the app reads each visitor's real IP from Cloudflare so lockouts work per visitor.
+  If cloudflared runs on the **same machine/VM** as Grace Treasury, no setup is needed. If it runs on a
+  different machine, set `TRUSTED_PROXY` in `.env` to that machine's IP. (This is an app setting, not a
+  Cloudflare one.) To check: after one wrong password from your phone, **Settings → Security** should show
+  your phone's public IP, not a `172.x.x.x` address.
 
 ---
 
