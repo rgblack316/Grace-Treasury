@@ -206,14 +206,14 @@ function FundActivityDialog({ open, onOpenChange, funds, onSaved }) {
                 <Label>From Fund</Label>
                 <Select value={form.from_fund_id || ""} onValueChange={(v) => set("from_fund_id", v)}>
                   <SelectTrigger data-testid="fa-from-fund"><SelectValue placeholder="Source fund" /></SelectTrigger>
-                  <SelectContent>{funds.map((f) => <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>)}</SelectContent>
+                  <SelectContent>{funds.filter((f) => f.active !== false).map((f) => <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
                 <Label>To Fund</Label>
                 <Select value={form.to_fund_id || ""} onValueChange={(v) => set("to_fund_id", v)}>
                   <SelectTrigger data-testid="fa-to-fund"><SelectValue placeholder="Destination fund" /></SelectTrigger>
-                  <SelectContent>{funds.map((f) => <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>)}</SelectContent>
+                  <SelectContent>{funds.filter((f) => f.active !== false).map((f) => <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
             </div>
@@ -223,7 +223,7 @@ function FundActivityDialog({ open, onOpenChange, funds, onSaved }) {
                 <Label>Fund</Label>
                 <Select value={form.fund_id || ""} onValueChange={(v) => set("fund_id", v)}>
                   <SelectTrigger data-testid="fa-fund"><SelectValue placeholder="Choose fund" /></SelectTrigger>
-                  <SelectContent>{funds.map((f) => <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>)}</SelectContent>
+                  <SelectContent>{funds.filter((f) => f.active !== false).map((f) => <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">

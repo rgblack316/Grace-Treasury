@@ -71,12 +71,14 @@ export default function Settings() {
           {canUsers && <TabsContent value="roles"><RolesTab /></TabsContent>}
           {canUsers && <TabsContent value="users"><UsersTab me={user} /></TabsContent>}
           {canData && <TabsContent value="backup"><BackupTab /></TabsContent>}
-          {isAdmin && <TabsContent value="security"><SecurityTab /><AuditLog /></TabsContent>}
+          {isAdmin && <TabsContent value="security"><SecurityTab /><DataCheckCard /><AuditLog /></TabsContent>}
         </Tabs>
       )}
     </div>
   );
 }
+
+const ACTIVE_FIELD = { key: "active", label: "Active", type: "switch", hint: "Inactive items are hidden when recording new entries but stay in history and reports." };
 
 function useCrud(path) {
   const [items, setItems] = useState([]);
@@ -97,8 +99,13 @@ function CrudDialog({ open, onOpenChange, title, fields, initial, onSubmit }) {
         <div className="space-y-4">
           {fields.map((f) => (
             <div key={f.key} className="space-y-1.5">
-              <Label>{f.label}</Label>
-              {f.type === "select" ? (
+              {f.type !== "switch" && <Label>{f.label}</Label>}
+              {f.type === "switch" ? (
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <Switch checked={form[f.key] !== false} onCheckedChange={(v) => set(f.key, v)} className="mt-0.5" data-testid={`crud-${f.key}`} />
+                  <span className="text-sm">{f.label}{f.hint && <span className="block text-xs text-muted-foreground">{f.hint}</span>}</span>
+                </label>
+              ) : f.type === "select" ? (
                 <Select value={form[f.key] || ""} onValueChange={(v) => set(f.key, v)}>
                   <SelectTrigger data-testid={`crud-${f.key}`}><SelectValue placeholder={f.placeholder} /></SelectTrigger>
                   <SelectContent>
@@ -136,7 +143,26 @@ function ManagerCard({ title, description, items, columns, fields, path, buildPa
       setOpen(false); setEditing(null); load();
     } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
   };
-  const doDelete = async () => { await api.delete(`/${path}/${deleteId}`); toast.success(`${label} deleted`); setDeleteId(null); load(); };
+  const doDelete = async () => {
+    const item = list.find((x) => x.id === deleteId);
+    setDeleteId(null);
+    try {
+      await api.delete(`/${path}/${item.id}`);
+      toast.success(`${label} deleted`);
+      load();
+    } catch (e) {
+      const msg = formatApiErrorDetail(e.response?.data?.detail);
+      if (e.response?.status === 409 && item && item.active !== false) {
+        toast.error(msg, {
+          duration: 10000,
+          action: { label: "Mark inactive", onClick: async () => {
+            try { await api.put(`/${path}/${item.id}`, buildPayload({ ...item, active: false })); toast.success(`${label} marked inactive`); load(); }
+            catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }
+          } },
+        });
+      } else toast.error(msg);
+    }
+  };
   return (
     <Card className="p-5 mt-4">
       <div className="flex items-center justify-between mb-4">
@@ -147,7 +173,7 @@ function ManagerCard({ title, description, items, columns, fields, path, buildPa
         {list.length === 0 && <div className="py-6 text-sm text-muted-foreground text-center">Nothing yet.</div>}
         {list.map((it) => (
           <div key={it.id} className="flex items-center justify-between py-3" data-testid={`${path}-row-${it.id}`}>
-            <div className="min-w-0">{columns(it)}</div>
+            <div className={`min-w-0 flex items-center gap-2 ${it.active === false ? "opacity-60" : ""}`}>{columns(it)}{it.active === false && <Badge variant="outline" className="shrink-0 text-muted-foreground" data-testid={`inactive-${it.id}`}>Inactive</Badge>}</div>
             <div className="flex items-center gap-1 shrink-0">
               <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(it); setOpen(true); }} data-testid={`btn-edit-${path}-${it.id}`}><Pencil className="h-4 w-4" /></Button>
               <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => setDeleteId(it.id)} data-testid={`btn-delete-${path}-${it.id}`}><Trash2 className="h-4 w-4" /></Button>
@@ -158,7 +184,7 @@ function ManagerCard({ title, description, items, columns, fields, path, buildPa
       <CrudDialog open={open} onOpenChange={setOpen} title={`${editing ? "Edit" : "Add"} ${label}`} fields={fields} initial={editing} onSubmit={submit} />
       <AlertDialog open={!!deleteId} onOpenChange={(o) => !o && setDeleteId(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Delete {label.toLowerCase()}?</AlertDialogTitle><AlertDialogDescription>This action cannot be undone.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogHeader><AlertDialogTitle>Delete {label.toLowerCase()}?</AlertDialogTitle><AlertDialogDescription>This can't be undone. Items already used by transactions can't be deleted; mark them inactive instead.</AlertDialogDescription></AlertDialogHeader>
           <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={doDelete} className="bg-destructive hover:bg-destructive/90" data-testid="confirm-delete">Delete</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -180,8 +206,9 @@ function AccountsTab() {
         { key: "mask", label: "Masked Number", placeholder: "*1234" },
         { key: "opening_balance", label: "Opening Balance", type: "number", placeholder: "0.00" },
         { key: "opening_date", label: "Opening Date", type: "date" },
+        ACTIVE_FIELD,
       ]}
-      buildPayload={(f) => ({ name: f.name, mask: f.mask || "", opening_balance: Number(f.opening_balance || 0), opening_date: f.opening_date || "", active: true })}
+      buildPayload={(f) => ({ name: f.name, mask: f.mask || "", opening_balance: Number(f.opening_balance || 0), opening_date: f.opening_date || "", active: f.active !== false })}
     />
   );
 }
@@ -200,8 +227,9 @@ function FundsTab() {
         { key: "parent_id", label: "Nested under (optional)", type: "select", placeholder: "Top level fund", options: parentOptions },
         { key: "opening_balance", label: "Opening Balance", type: "number", placeholder: "0.00" },
         { key: "opening_date", label: "Opening Date", type: "date" },
+        ACTIVE_FIELD,
       ]}
-      buildPayload={(f) => ({ name: f.name, description: f.description || "", parent_id: f.parent_id && f.parent_id !== "none" ? f.parent_id : null, opening_balance: Number(f.opening_balance || 0), opening_date: f.opening_date || "", active: true })}
+      buildPayload={(f) => ({ name: f.name, description: f.description || "", parent_id: f.parent_id && f.parent_id !== "none" ? f.parent_id : null, opening_balance: Number(f.opening_balance || 0), opening_date: f.opening_date || "", active: f.active !== false })}
     />
   );
 }
@@ -212,8 +240,8 @@ function CategoriesTab() {
     <ManagerCard title="Categories" description="Group income and expenses for the summary report. Optional on each transaction."
       items={items} path="categories" label="Category"
       columns={(c) => <div className="flex items-center gap-2"><span className="font-medium text-slate-800">{c.name}</span><Badge variant="outline" className={`capitalize ${c.type === "income" ? "text-[#15803D] border-[#BBF7D0]" : "text-[#B91C1C] border-[#FECACA]"}`}>{c.type}</Badge></div>}
-      fields={[{ key: "name", label: "Category Name", placeholder: "Utilities" }, { key: "type", label: "Type", type: "select", placeholder: "Choose type", options: [{ value: "income", label: "Income" }, { value: "expense", label: "Expense" }] }]}
-      buildPayload={(f) => ({ name: f.name, type: f.type || "expense", active: true })}
+      fields={[{ key: "name", label: "Category Name", placeholder: "Utilities" }, { key: "type", label: "Type", type: "select", placeholder: "Choose type", options: [{ value: "income", label: "Income" }, { value: "expense", label: "Expense" }] }, ACTIVE_FIELD]}
+      buildPayload={(f) => ({ name: f.name, type: f.type || "expense", active: f.active !== false })}
     />
   );
 }
@@ -224,8 +252,8 @@ function PayeesTab() {
     <ManagerCard title="Payees & Vendors" description="A quick-pick list for recording expenses consistently."
       items={items} path="payees" label="Payee"
       columns={(p) => <div className="font-medium text-slate-800">{p.name}</div>}
-      fields={[{ key: "name", label: "Payee / Vendor Name", placeholder: "Frontier Communications" }]}
-      buildPayload={(f) => ({ name: f.name, active: true })}
+      fields={[{ key: "name", label: "Payee / Vendor Name", placeholder: "Frontier Communications" }, ACTIVE_FIELD]}
+      buildPayload={(f) => ({ name: f.name, active: f.active !== false })}
     />
   );
 }
@@ -350,6 +378,7 @@ const AUDIT_LABELS = {
   "role.update": "Edited role",
   "role.delete": "Deleted role",
   "login.unlock": "Unlocked sign-in",
+  "data.check": "Ran a data check",
   "settings.account_notices": "Account emails setting",
   "settings.email_changed": "Changed email settings",
   "email.test": "Sent a test email",
@@ -362,6 +391,64 @@ const AUDIT_LABELS = {
   "data.export": "Downloaded a backup",
   "data.restore": "Restored from backup",
 };
+
+function DataCheckCard() {
+  const [result, setResult] = useState(null);
+  const [running, setRunning] = useState(false);
+  const run = async () => {
+    setRunning(true);
+    try { const { data } = await api.get("/security/data-check"); setResult(data); }
+    catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
+    finally { setRunning(false); }
+  };
+  const c = result?.checked;
+  return (
+    <Card className="p-5 mt-4" data-testid="data-check-card">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+        <div>
+          <h3 className="font-serif text-lg font-semibold text-slate-900 flex items-center gap-2"><ShieldCheck className="h-5 w-5 text-[#B45309]" />Data Check</h3>
+          <p className="text-sm text-muted-foreground max-w-2xl">Looks for records that break the app's rules — for example from older versions, imports or direct database edits. It only reads; nothing is changed.</p>
+        </div>
+        <Button onClick={run} disabled={running} variant="outline" data-testid="btn-run-data-check">
+          {running ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <ShieldCheck className="h-4 w-4 mr-2" />}Run Data Check
+        </Button>
+      </div>
+      {result && (
+        result.issue_count === 0 ? (
+          <div className="flex items-center gap-2 rounded-lg bg-[#F0FDF4] text-[#15803D] px-3 py-2 text-sm" data-testid="data-check-clean">
+            <ShieldCheck className="h-4 w-4" /> No problems found in {c.transactions} transactions, {c.fund_activity} fund moves, {c.accounts} accounts and {c.funds} funds.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-start gap-2 rounded-lg bg-[#FFFBEB] text-[#B45309] px-3 py-2 text-sm">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" /> {result.issue_count} problem{result.issue_count === 1 ? "" : "s"} found. These need a decision on how to correct each one; nothing has been changed.
+            </div>
+            <div className="overflow-x-auto border-t border-[#EEEDE7]">
+              <table className="w-full text-sm" data-testid="data-check-issues">
+                <thead><tr className="text-left text-slate-500 border-b border-[#EEEDE7]">
+                  <th className="py-2 pr-3 font-medium">Record</th><th className="py-2 pr-3 font-medium">Date</th><th className="py-2 pr-3 font-medium">Account</th>
+                  <th className="py-2 pr-3 font-medium text-right">Amount</th><th className="py-2 pr-3 font-medium">Memo / Name</th><th className="py-2 font-medium">Problem</th>
+                </tr></thead>
+                <tbody>
+                  {result.issues.map((i, n) => (
+                    <tr key={`${i.id}-${n}`} className="border-b border-[#F4F0E8] align-top">
+                      <td className="py-2 pr-3 capitalize whitespace-nowrap">{i.kind}</td>
+                      <td className="py-2 pr-3 font-mono whitespace-nowrap">{i.date || "—"}</td>
+                      <td className="py-2 pr-3 whitespace-nowrap">{i.account || "—"}</td>
+                      <td className="py-2 pr-3 text-right font-mono whitespace-nowrap">{i.amount ?? "—"}</td>
+                      <td className="py-2 pr-3 text-slate-600">{i.memo || "—"}</td>
+                      <td className="py-2 text-[#B91C1C]">{i.problem}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
+      )}
+    </Card>
+  );
+}
 
 function AuditLog() {
   const [rows, setRows] = useState([]);

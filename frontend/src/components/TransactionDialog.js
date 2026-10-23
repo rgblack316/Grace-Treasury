@@ -218,7 +218,13 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
     }
   };
 
-  const catsForType = lists.categories.filter((c) => (type === "transfer" ? false : c.type === type));
+  // Inactive items are hidden from pickers, except ones this entry already uses (so edits keep them).
+  const inUse = new Set([form.account_id, form.to_account_id, form.payee_id, form.category_id, form.fund_id, ...splits.map((s) => s.fund_id)].filter(Boolean));
+  const pick = (arr) => arr.filter((x) => x.active !== false || inUse.has(x.id));
+  const accountsList = pick(lists.accounts);
+  const payeesList = pick(lists.payees);
+  const fundsList = pick(lists.funds);
+  const catsForType = pick(lists.categories).filter((c) => (type === "transfer" ? false : c.type === type));
   const fileIcon = (ct) => (ct === "application/pdf" ? FileText : ImageIcon);
 
   return (
@@ -265,7 +271,7 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
             <Select value={form.account_id || ""} onValueChange={(v) => set("account_id", v)}>
               <SelectTrigger data-testid="select-bank-account"><SelectValue placeholder="Choose account" /></SelectTrigger>
               <SelectContent>
-                {lists.accounts.map((a) => (
+                {accountsList.map((a) => (
                   <SelectItem key={a.id} value={a.id}>{a.name} {a.mask}</SelectItem>
                 ))}
               </SelectContent>
@@ -278,7 +284,7 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
               <Select value={form.to_account_id || ""} onValueChange={(v) => set("to_account_id", v)}>
                 <SelectTrigger data-testid="select-to-account"><SelectValue placeholder="Choose destination" /></SelectTrigger>
                 <SelectContent>
-                  {lists.accounts.map((a) => (
+                  {accountsList.map((a) => (
                     <SelectItem key={a.id} value={a.id}>{a.name} {a.mask}</SelectItem>
                   ))}
                 </SelectContent>
@@ -314,7 +320,7 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
                   <SelectTrigger data-testid="select-payee"><SelectValue placeholder="Choose payee" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value={NONE}>None</SelectItem>
-                    {lists.payees.map((p) => (
+                    {payeesList.map((p) => (
                       <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
                     ))}
                   </SelectContent>
@@ -351,7 +357,7 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
                     <SelectTrigger data-testid="select-fund"><SelectValue placeholder="Choose fund" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value={NONE}>None</SelectItem>
-                      {orderFunds(lists.funds).map((f) => (
+                      {orderFunds(fundsList).map((f) => (
                         <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>
                       ))}
                     </SelectContent>
@@ -368,7 +374,7 @@ export default function TransactionDialog({ open, onOpenChange, editing, onSaved
                       <Select value={s.fund_id || ""} onValueChange={(v) => setSplit(i, "fund_id", v)}>
                         <SelectTrigger className="flex-1" data-testid={`split-fund-${i}`}><SelectValue placeholder="Choose fund" /></SelectTrigger>
                         <SelectContent>
-                          {orderFunds(lists.funds).map((f) => (
+                          {orderFunds(fundsList).map((f) => (
                             <SelectItem key={f.id} value={f.id}>{fundIndent(f.depth)}{f.name}</SelectItem>
                           ))}
                         </SelectContent>
