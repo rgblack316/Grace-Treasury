@@ -11,7 +11,7 @@ import os
 import pytest
 import requests
 
-BASE_URL = (os.environ.get('REACT_APP_BACKEND_URL') or "https://church-treasury-5.preview.emergentagent.com").rstrip('/')
+BASE_URL = (os.environ.get('REACT_APP_BACKEND_URL') or "http://localhost:8080").rstrip('/')
 API = f"{BASE_URL}/api"
 
 ADMIN_EMAIL = "treasurer@church.org"
