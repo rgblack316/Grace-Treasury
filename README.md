@@ -216,6 +216,15 @@ You'll also need MongoDB running locally (`mongodb://localhost:27017`).
 - **Sign-in protection:** 5 wrong passwords for an email from the same IP locks that email from that IP
   for 15 minutes; 20 failures from one IP locks the IP. Nginx also limits login requests to about 10 per
   minute per IP. Administrators can review failed sign-ins and unlock people under **Settings → Security**.
+- **Temporary passwords:** passwords set by a user manager (new users and resets) must be changed at the
+  next sign-in, so only the user knows their final password. Everyone can change their own password from
+  the account menu.
+- **Sessions:** changing or resetting a password, or changing someone's role, signs that user out of every
+  device immediately. Admins can also sign a user out from **Settings → Users**, and anyone can use
+  **Sign out other devices** from the account menu.
+- **No privilege escalation:** a non-admin who can manage users can only edit, reset, sign out or remove
+  users whose permissions they also hold. All of these actions are recorded in **Settings → Security →
+  Activity Log**.
 - If you put the app behind a Cloudflare Tunnel, set `TRUSTED_PROXY` so lockouts use each visitor's real IP
   (otherwise every visitor appears to come from the tunnel).
 

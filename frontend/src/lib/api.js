@@ -14,6 +14,10 @@ api.interceptors.response.use(
   (r) => r,
   (err) => {
     if (err.response?.status === 401 && !err.config.url.includes("/auth/login")) {
+      const detail = err.response?.data?.detail;
+      try {
+        if (localStorage.getItem("ct_token") && typeof detail === "string") sessionStorage.setItem("ct_signout_reason", detail);
+      } catch { /* storage unavailable */ }
       localStorage.removeItem("ct_token");
       if (window.location.pathname !== "/login") window.location.href = "/login";
     }
