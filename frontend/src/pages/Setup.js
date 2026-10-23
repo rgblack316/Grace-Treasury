@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { formatApiErrorDetail } from "@/lib/api";
@@ -16,15 +16,16 @@ const rules = [
 ];
 
 export default function Setup() {
-  const { setup, needsSetup, ready } = useAuth();
+  const { setup, needsSetup, ready, user } = useAuth();
   const navigate = useNavigate();
-  const [form, setForm] = useState({ name: "", email: "", password: "", confirm: "" });
+  const [form, setForm] = useState({ code: "", name: "", email: "", password: "", confirm: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  if (ready && !needsSetup) {
-    navigate("/login", { replace: true });
-  }
+  // Setup already done: go to the app if signed in (e.g. right after creating the admin), else to sign-in.
+  useEffect(() => {
+    if (ready && !needsSetup) navigate(user ? "/" : "/login", { replace: true });
+  }, [ready, needsSetup, user, navigate]);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const allPass = rules.every((r) => r.test(form.password));
@@ -35,9 +36,10 @@ export default function Setup() {
     setError("");
     if (!allPass) return setError("Please meet all password requirements.");
     if (!match) return setError("Passwords do not match.");
+    if (!form.code.trim()) return setError("Enter the setup code.");
     setLoading(true);
     try {
-      await setup(form.name.trim(), form.email.trim().toLowerCase(), form.password);
+      await setup(form.name.trim(), form.email.trim().toLowerCase(), form.password, form.code.trim());
       navigate("/");
     } catch (err) {
       setError(formatApiErrorDetail(err.response?.data?.detail) || err.message);
@@ -72,6 +74,14 @@ export default function Setup() {
           <p className="text-sm text-muted-foreground mt-1 mb-6">The first account is the treasurer and can manage everything.</p>
 
           <form onSubmit={submit} className="space-y-4" data-testid="setup-form">
+            <div className="space-y-1.5">
+              <Label htmlFor="code">Setup Code</Label>
+              <Input id="code" value={form.code} onChange={(e) => set("code", e.target.value.toUpperCase())} placeholder="XXXX-XXXX-XXXX-XXXX" autoComplete="off" spellCheck={false} className="font-mono tracking-wider" required data-testid="setup-code-input" />
+              <p className="text-xs text-muted-foreground">
+                Shown when Grace Treasury was installed, and saved as <span className="font-mono">SETUP_CODE</span> in the server's <span className="font-mono">.env</span> file
+                (or run <span className="font-mono">docker compose logs backend</span>). It keeps strangers from claiming a new install.
+              </p>
+            </div>
             <div className="space-y-1.5">
               <Label htmlFor="name">Your Name</Label>
               <Input id="name" value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. Jane Smith" required data-testid="setup-name-input" />

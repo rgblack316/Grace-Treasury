@@ -27,6 +27,8 @@ import bcrypt
 import jwt
 import base64
 import secrets
+import hmac
+from pymongo.errors import DuplicateKeyError
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -393,6 +395,7 @@ class SetupInput(BaseModel):
     name: str
     email: EmailStr
     password: str
+    setup_code: str = ""
 
 
 class RoleInput(BaseModel):
@@ -594,25 +597,84 @@ async def record_login_attempt(email: str, ip: str, success: bool, user_agent: s
 @api_router.get("/auth/setup-status")
 async def setup_status():
     count = await db.users.count_documents({})
-    return {"needs_setup": count == 0}
+    if count == 0:
+        current_setup_code()  # make sure a code exists (and is logged) before anyone is asked for it
+    return {"needs_setup": count == 0, "requires_code": True}
+
+
+# ----------------------------- First-run setup code -----------------------------
+# Until the first Administrator exists, setup requires a one-time code so a stranger who
+# reaches a fresh install can't claim it. install.sh puts SETUP_CODE in .env and shows it;
+# if none is set, the backend makes one and prints it in its log.
+_SETUP_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O or 1/I
+_generated_setup_code: Optional[str] = None
+
+
+def _normalize_code(code: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (code or "").upper())
+
+
+def current_setup_code() -> str:
+    global _generated_setup_code
+    env_code = _normalize_code(os.environ.get("SETUP_CODE", ""))
+    if env_code:
+        return env_code
+    if not _generated_setup_code:
+        raw = "".join(secrets.choice(_SETUP_ALPHABET) for _ in range(16))
+        _generated_setup_code = raw
+        pretty = "-".join(raw[i:i + 4] for i in range(0, 16, 4))
+        logger.warning("=" * 64)
+        logger.warning(f"  Grace Treasury setup code: {pretty}")
+        logger.warning("  Enter it on the setup page to create the first Administrator.")
+        logger.warning("=" * 64)
+    return _generated_setup_code
+
+
+async def claim_first_setup() -> None:
+    """Atomically claim first-run setup; only one request can ever win (MongoDB _id is unique)."""
+    try:
+        await db.setup_claim.insert_one({"_id": "first-admin", "at": _utcnow()})
+    except DuplicateKeyError:
+        # A crashed attempt can leave a claim with no admin; let it expire after two minutes.
+        claim = await db.setup_claim.find_one({"_id": "first-admin"})
+        stale = claim and (_utcnow() - _naive_utc(claim["at"])).total_seconds() > 120
+        if stale and await db.users.count_documents({}) == 0:
+            await db.setup_claim.delete_one({"_id": "first-admin", "at": claim["at"]})
+            return await claim_first_setup()
+        raise HTTPException(status_code=400, detail="Setup has already been completed")
 
 
 @api_router.post("/auth/setup")
-async def setup(data: SetupInput):
+async def setup(data: SetupInput, request: Request):
     if await db.users.count_documents({}) > 0:
         raise HTTPException(status_code=400, detail="Setup has already been completed")
+    ip = client_ip(request)
+    wait = await login_lock_seconds("__setup__", ip)
+    if wait:
+        raise HTTPException(status_code=429, detail="Too many wrong setup codes. Please wait and try again.",
+                            headers={"Retry-After": str(wait)})
+    if not hmac.compare_digest(_normalize_code(data.setup_code), current_setup_code()):
+        await record_login_attempt("__setup__", ip, False, request.headers.get("user-agent", ""))
+        logger.warning(f"Setup attempt with a wrong setup code from {ip}")
+        raise HTTPException(status_code=403, detail="That setup code isn't right. It was shown when Grace Treasury was "
+                                                    "installed, and is saved as SETUP_CODE in the .env file.")
     validate_strong_password(data.password)
-    await seed_starter_data()
-    admin_role = await db.roles.find_one({"name": "Administrator"})
-    uid = new_id()
-    doc = {
-        "id": uid, "email": data.email.lower(), "name": data.name,
-        "role": "admin", "role_id": admin_role["id"] if admin_role else None,
-        "password_hash": hash_password(data.password), "created_at": now_iso(),
-    }
-    await db.users.insert_one(doc)
+    await claim_first_setup()
+    try:
+        await seed_starter_data()
+        admin_role = await db.roles.find_one({"name": "Administrator"})
+        uid = new_id()
+        doc = {
+            "id": uid, "email": data.email.lower(), "name": data.name,
+            "role": "admin", "role_id": admin_role["id"] if admin_role else None,
+            "password_hash": hash_password(data.password), "created_at": now_iso(),
+        }
+        await db.users.insert_one(doc)
+    except Exception:
+        await db.setup_claim.delete_one({"_id": "first-admin"})  # let setup be retried
+        raise
     token = create_access_token(uid, doc["email"])
-    await audit(doc, "setup.admin_created", doc)
+    await audit(doc, "setup.admin_created", doc, f"from {ip}", request)
     return {"token": token, "user": await shape_user(doc)}
 
 

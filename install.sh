@@ -175,6 +175,27 @@ cd "$INSTALL_DIR"
 # Create environment file
 # ------------------------------------------------------------
 
+generate_setup_code() {
+  # 16 characters from an unambiguous alphabet (no 0/O, 1/I), shown as XXXX-XXXX-XXXX-XXXX
+  local raw
+  raw="$(head -c 1024 /dev/urandom | LC_ALL=C tr -dc 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' | cut -c1-16)"
+  echo "${raw:0:4}-${raw:4:4}-${raw:8:4}-${raw:12:4}"
+}
+
+ensure_setup_code() {
+  # Add a SETUP_CODE to .env if it doesn't have one (only used before the first admin exists).
+  if ! grep -qE '^SETUP_CODE=.+' .env; then
+    local code
+    code="$(generate_setup_code)"
+    if grep -q '^SETUP_CODE=' .env; then
+      sed -i "s|^SETUP_CODE=.*|SETUP_CODE=$code|" .env
+    else
+      printf '\n# One-time code for creating the first Administrator\nSETUP_CODE=%s\n' "$code" >> .env
+    fi
+  fi
+}
+
+
 if [ ! -f .env ]; then
   log "Creating .env..."
   cp env.example .env
@@ -191,6 +212,8 @@ if [ ! -f .env ]; then
 else
   log ".env already exists. Leaving it unchanged."
 fi
+ensure_setup_code
+SETUP_CODE_SHOWN="$(awk -F= '$1 == "SETUP_CODE" {print substr($0, index($0,"=")+1); exit}' .env)"
 
 # ------------------------------------------------------------
 # Create backup directory
@@ -224,6 +247,12 @@ echo "Compose: $(docker_cmd compose version)"
 echo
 docker_cmd compose ps
 
+echo
+echo "------------------------------------------"
+echo " Setup code (needed to create the first Administrator):"
+echo "     $SETUP_CODE_SHOWN"
+echo " It is also saved as SETUP_CODE in $INSTALL_DIR/.env"
+echo "------------------------------------------"
 echo
 echo "Grace Treasury should now be available at:"
 echo "    http://localhost:8080"
