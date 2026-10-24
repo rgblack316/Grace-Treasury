@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import api from "@/lib/api";
 import { money, fmtDate, orderFunds, fundIndent } from "@/lib/format";
 import { useSearchParams } from "react-router-dom";
@@ -36,7 +36,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import TransactionDialog, { PAYMENT_METHODS } from "@/components/TransactionDialog";
 import ImportDialog from "@/components/ImportDialog";
-import { Search, Pencil, Trash2, Plus, X, Upload, Paperclip, Scale, Ban, RotateCcw } from "lucide-react";
+import { Search, Pencil, Trash2, Plus, X, Upload, Paperclip, Scale, Ban, RotateCcw, Loader2 } from "lucide-react";
 
 const ALL = "__all__";
 const PAYMENT_LABELS = Object.fromEntries(PAYMENT_METHODS.map((m) => [m.id, m.label]));
@@ -46,6 +46,11 @@ export default function Transactions() {
   const canManage = can("transactions.manage");
   const [params, setParams] = useSearchParams();
   const [txns, setTxns] = useState([]);
+  // "loading" until the first answer arrives, then "ready" (or "error"); never show
+  // "No transactions found" while we're still waiting.
+  const [status, setStatus] = useState("loading");
+  const [refreshing, setRefreshing] = useState(false);
+  const requestSeq = useRef(0);
   const [lists, setLists] = useState({ accounts: [], funds: [], categories: [], payees: [] });
   const [reconcile, setReconcile] = useState(null);
   const [filters, setFilters] = useState({
@@ -70,7 +75,16 @@ export default function Transactions() {
     Object.entries(filters).forEach(([k, v]) => {
       if (v) q[k] = v;
     });
-    api.get("/transactions", { params: q }).then((r) => setTxns(r.data));
+    const seq = ++requestSeq.current;
+    setRefreshing(true);
+    api.get("/transactions", { params: q })
+      .then((r) => {
+        if (seq !== requestSeq.current) return; // a newer filter change already asked again
+        setTxns(r.data);
+        setStatus("ready");
+      })
+      .catch(() => { if (seq === requestSeq.current) setStatus((s) => (s === "ready" ? s : "error")); })
+      .finally(() => { if (seq === requestSeq.current) setRefreshing(false); });
     if (filters.account_id) {
       api.get(`/accounts/${filters.account_id}/reconcile`).then((r) => setReconcile(r.data)).catch(() => setReconcile(null));
     } else {
@@ -278,7 +292,17 @@ export default function Transactions() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {txns.length === 0 && (
+            {status === "loading" && (
+              <TableRow><TableCell colSpan={9} className="text-center py-10 text-muted-foreground" data-testid="transactions-loading">
+                <span className="inline-flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Loading transactions…</span>
+              </TableCell></TableRow>
+            )}
+            {status === "error" && (
+              <TableRow><TableCell colSpan={9} className="text-center py-10 text-[#B91C1C]" data-testid="transactions-error">
+                Couldn't load transactions. <button type="button" className="underline" onClick={load}>Try again</button>
+              </TableCell></TableRow>
+            )}
+            {status === "ready" && txns.length === 0 && (
               <TableRow><TableCell colSpan={9} className="text-center py-10 text-muted-foreground">No transactions found.</TableCell></TableRow>
             )}
             {paged.map((t) => (
