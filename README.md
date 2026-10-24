@@ -258,8 +258,8 @@ You'll also need MongoDB running locally (`mongodb://localhost:27017`).
   container (still `http://<server>:8080` from outside).
 - **Backend** starts just long enough to hand the backup folder to its own user, then runs with no Linux
   capabilities at all. All containers use `no-new-privileges`.
-- **MongoDB** sits on an internal-only Docker network (`database`): only the backend can reach it, and it has
-  no internet access. No database port is published on the host.
+- **MongoDB** sits on its own Docker network (`database`) shared only with the backend, so the frontend
+  can't reach it. No database port is published on the host.
 
 If you point a reverse proxy or tunnel **directly at the frontend container** (for example
 `http://frontend:80` on a shared Docker network), change it to port **8080**. Pointing at

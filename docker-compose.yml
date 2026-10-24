@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     volumes:
       - mongo_data:/data/db
-    # Only the backend can reach the database, and it has no internet access.
+    # Only the backend can reach the database (the frontend isn't on this network).
     networks:
       - database
     security_opt:
@@ -71,7 +71,9 @@ volumes:
 networks:
   treasury:
     driver: bridge
-  # internal: no route to the outside world; only containers on it can connect
+  # Shared only by the backend and MongoDB. Deliberately NOT "internal: true": on an
+  # internal network, Docker's DNS made each new backend-to-database connection wait out
+  # a lookup timeout, so pages took several seconds and sign-ins through the Cloudflare
+  # Tunnel failed. No database port is published, so nothing outside Docker can reach it.
   database:
     driver: bridge
-    internal: true
