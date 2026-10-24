@@ -96,9 +96,13 @@ cd ~/grace-treasury
 ./upgrade.sh
 ```
 
+Run it as your normal user. It uses `sudo` for Docker itself when needed. It upgrades the install it
+lives in, so it works from any folder (e.g. `/home/you/grace-treasury/upgrade.sh`), and still finds the
+right install if you do run it with `sudo`.
+
 > The scripts default to cloning `https://github.com/rgblack316/Grace-Treasury.git`. Override with
-> `REPO_URL=... bash install.sh` if your repository lives elsewhere, and `APP_DIR=... ./upgrade.sh`
-> if you installed somewhere other than `~/grace-treasury`.
+> `REPO_URL=... bash install.sh` if your repository lives elsewhere. `APP_DIR=... ./upgrade.sh` points
+> the upgrade at a different install folder.
 
 #### One-time manual upgrade (existing VMs on an older script)
 

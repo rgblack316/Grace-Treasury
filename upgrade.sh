@@ -9,25 +9,60 @@ set -euo pipefail
 # recreating the MongoDB named volume. Refuses to overwrite
 # uncommitted/local Git work or a diverged local branch.
 #
-# Run from any directory (defaults to ~/grace-treasury), or set
-# APP_DIR to point at your installation:
-#     ./upgrade.sh
+# Run it from your install folder (with or without sudo):
+#     cd ~/grace-treasury && ./upgrade.sh
+# It finds the install it lives in. You can also point it elsewhere:
 #     APP_DIR=/opt/grace-treasury ./upgrade.sh
 # ============================================================
-
-APP_DIR="${APP_DIR:-$HOME/grace-treasury}"
-BACKUP_DIR="$APP_DIR/backups"
-TIMESTAMP="$(date '+%Y-%m-%d_%H-%M-%S')"
-DB_BACKUP_DIR="$BACKUP_DIR/pre-upgrade-$TIMESTAMP"
 
 log() { echo "[Grace Treasury] $*"; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
-if [ ! -d "$APP_DIR/.git" ]; then
-  fail "Grace Treasury Git repository not found: $APP_DIR (set APP_DIR to your install path)"
+# Where is the install? 1) APP_DIR if given, 2) the folder this script is in (it ships inside
+# the repository), 3) the real user's ~/grace-treasury (install.sh's default; correct under
+# sudo, where $HOME is /root), 4) this user's ~/grace-treasury.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REAL_USER="${SUDO_USER:-$(id -un)}"
+REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
+REAL_HOME="${REAL_HOME:-$HOME}"
+if [ -z "${APP_DIR:-}" ]; then
+  if [ -d "$SCRIPT_DIR/.git" ] && [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
+    APP_DIR="$SCRIPT_DIR"
+  else
+    APP_DIR="$REAL_HOME/grace-treasury"
+  fi
 fi
 
+if [ ! -d "$APP_DIR/.git" ]; then
+  fail "Grace Treasury wasn't found at $APP_DIR.
+       Run this script from inside your install folder (cd /path/to/grace-treasury && ./upgrade.sh),
+       or tell it where the install is: APP_DIR=/path/to/grace-treasury ./upgrade.sh"
+fi
+APP_DIR="$(cd "$APP_DIR" && pwd)"
+
+# Git refuses to work as root in a folder owned by another user ("dubious ownership"),
+# and files it pulled would end up owned by root. So when this runs as root (sudo or a
+# root login), run Git as the folder's owner. Docker commands still run as root.
+REPO_OWNER="$(stat -c %U "$APP_DIR")"
+REPO_OWNER_HOME="$(getent passwd "$REPO_OWNER" | cut -d: -f6)"
+git() {
+  if [ "${EUID}" -eq 0 ] && [ "$REPO_OWNER" != "root" ]; then
+    if command -v runuser >/dev/null 2>&1; then
+      runuser -u "$REPO_OWNER" -- env HOME="$REPO_OWNER_HOME" git "$@"
+    else
+      sudo -u "$REPO_OWNER" -H git "$@"
+    fi
+  else
+    command git "$@"
+  fi
+}
+
+BACKUP_DIR="$APP_DIR/backups"
+TIMESTAMP="$(date '+%Y-%m-%d_%H-%M-%S')"
+DB_BACKUP_DIR="$BACKUP_DIR/pre-upgrade-$TIMESTAMP"
+
 cd "$APP_DIR"
+log "Install folder: $APP_DIR"
 
 if ! command -v docker >/dev/null 2>&1; then
   fail "Docker is not installed. Run install.sh on a fresh system or install Docker manually."
@@ -72,6 +107,10 @@ if [ -n "$(git status --porcelain -- ':!backups')" ]; then
   echo "Local Git changes were detected:"
   git status --short -- ':!backups'
   echo
+  if git status --porcelain -- ':!backups' | grep -q 'docker-compose.override.yml'; then
+    echo "A docker-compose.override.yml file is present. If it was only a temporary test, remove it"
+    echo "(rm docker-compose.override.yml) and run this again."
+  fi
   echo "Upgrade cancelled. Commit, stash, or otherwise resolve these changes first."
   echo "(Changes inside the backups/ folder are ignored and do not block upgrades.)"
   exit 1
@@ -182,7 +221,14 @@ git pull --ff-only
 # ------------------------------------------------------------
 
 log "Rebuilding Grace Treasury..."
-docker_cmd compose up -d --build
+if ! docker_cmd compose up -d --build; then
+  echo
+  echo "The rebuild/restart failed. If the message above says a network \"needs to be recreated\","
+  echo "run this (your data is kept; 'down' without -v doesn't remove the database volume):"
+  echo "    docker compose down && docker compose up -d"
+  echo "Database backup from before this upgrade: $DB_BACKUP_DIR/mongodb.archive.gz"
+  exit 1
+fi
 
 # ------------------------------------------------------------
 # Wait for containers and report status
