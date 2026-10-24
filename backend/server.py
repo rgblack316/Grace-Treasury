@@ -47,8 +47,21 @@ from reportlab.platypus import (
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# The MongoDB client is created in connect_db() during app startup, not here at import time:
+# Motor ties itself to the event loop that exists when the client is created, and Uvicorn
+# runs the app on its own new loop. Creating it at import time crashes startup with
+# "... attached to a different loop".
+client = None
+db = None
+fs_bucket = None
+
+
+def connect_db():
+    """Create the MongoDB client, database handle and receipt store on the running loop."""
+    global client, db, fs_bucket
+    client = AsyncIOMotorClient(mongo_url)
+    db = client[os.environ['DB_NAME']]
+    fs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="receipts")
 
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
@@ -56,8 +69,6 @@ JWT_ALGORITHM = "HS256"
 # ----------------------------- Receipt storage (MongoDB GridFS — fully local) -----------------------------
 import re
 from xml.sax.saxutils import escape as xml_escape
-
-fs_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="receipts")
 
 BACKUP_DIR = os.environ.get("BACKUP_DIR") or str(ROOT_DIR / "backups")
 os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -133,6 +144,8 @@ PERMISSION_LABELS = {
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    if db is None:  # tests may provide their own database beforehand
+        connect_db()
     await startup()
     yield
     await shutdown()
@@ -2932,4 +2945,5 @@ async def shutdown():
             scheduler.shutdown(wait=False)
     except Exception:
         pass
-    client.close()
+    if client is not None:
+        client.close()
