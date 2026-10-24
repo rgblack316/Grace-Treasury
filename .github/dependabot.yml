@@ -20,6 +20,12 @@ updates:
     groups:
       js-minor-and-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # Create React App builds with its own bundled Tailwind 3 (react-scripts/node_modules),
+      # so the project's tailwindcss version must stay on 3 to match tailwind.config.js and
+      # tailwindcss-animate. Tailwind 4 needs a different build setup; revisit with a move to Vite.
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "docker"
     directory: "/backend"
