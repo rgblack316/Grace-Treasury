@@ -24,14 +24,14 @@ import { PiggyBank, ArrowLeftRight, Plus, Minus, Trash2, Loader2 } from "lucide-
 export default function FundActivity() {
   const { can } = useAuth();
   const canManage = can("transactions.manage");
-  const [funds, setFunds] = useState([]);
-  const [activity, setActivity] = useState([]);
+  const [funds, setFunds] = useState(null);       // null = still loading
+  const [activity, setActivity] = useState(null);
   const [open, setOpen] = useState(false);
   const [deleteId, setDeleteId] = useState(null);
 
   const load = () => {
-    api.get("/dashboard").then((r) => setFunds(r.data.funds || []));
-    api.get("/fund-activity").then((r) => setActivity(r.data));
+    api.get("/dashboard").then((r) => setFunds(r.data.funds || [])).catch(() => setFunds((f) => f || []));
+    api.get("/fund-activity").then((r) => setActivity(r.data)).catch(() => setActivity((a) => a || []));
   };
   useEffect(() => { load(); }, []); // eslint-disable-line
 
@@ -64,8 +64,9 @@ export default function FundActivity() {
       <div>
         <h2 className="font-serif text-xl font-semibold text-slate-900 mb-4">Fund Balances</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-          {funds.length === 0 && <Card className="p-5 text-sm text-muted-foreground">No funds yet. Add one in Settings → Funds.</Card>}
-          {funds.map((f) => (
+          {funds === null && <Card className="p-5 text-sm text-muted-foreground inline-flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Loading funds…</Card>}
+          {funds !== null && funds.length === 0 && <Card className="p-5 text-sm text-muted-foreground">No funds yet. Add one in Settings → Funds.</Card>}
+          {(funds || []).map((f) => (
             <Card key={f.id} className="p-5 border-[#E5E0D8]" data-testid={`fund-balance-card-${f.id}`} style={{ marginLeft: (f.depth || 0) * 16 }}>
               <div className="flex items-center justify-between">
                 <div className="h-10 w-10 rounded-lg bg-[#FEF3C7] grid place-items-center">
@@ -84,8 +85,9 @@ export default function FundActivity() {
       <div>
         <h2 className="font-serif text-xl font-semibold text-slate-900 mb-4">Activity History</h2>
         <Card className="divide-y divide-[#EEEDE7]">
-          {activity.length === 0 && <div className="p-5 text-sm text-muted-foreground">No fund moves or adjustments yet.</div>}
-          {activity.map((a) => (
+          {activity === null && <div className="p-5 text-sm text-muted-foreground inline-flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</div>}
+          {activity !== null && activity.length === 0 && <div className="p-5 text-sm text-muted-foreground">No fund moves or adjustments yet.</div>}
+          {(activity || []).map((a) => (
             <div key={a.id} className="flex items-center justify-between p-4" data-testid={`fund-activity-row-${a.id}`}>
               <div className="flex items-center gap-3 min-w-0">
                 <div className="h-9 w-9 rounded-lg bg-[#F4F0E8] grid place-items-center shrink-0">
@@ -111,7 +113,7 @@ export default function FundActivity() {
         </Card>
       </div>
 
-      <FundActivityDialog open={open} onOpenChange={setOpen} funds={funds} onSaved={load} />
+      <FundActivityDialog open={open} onOpenChange={setOpen} funds={funds || []} onSaved={load} />
 
       <AlertDialog open={!!deleteId} onOpenChange={(o) => !o && setDeleteId(null)}>
         <AlertDialogContent>

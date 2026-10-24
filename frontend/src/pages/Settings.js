@@ -81,7 +81,7 @@ export default function Settings() {
 const ACTIVE_FIELD = { key: "active", label: "Active", type: "switch", hint: "Inactive items are hidden when recording new entries but stay in history and reports." };
 
 function useCrud(path) {
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState(null); // null = still loading
   const load = () => api.get(`/${path}`).then((r) => setItems(r.data));
   useEffect(() => { load(); }, []); // eslint-disable-line
   return { items, load };
@@ -133,6 +133,7 @@ function ManagerCard({ title, description, items, columns, fields, path, buildPa
   const [deleteId, setDeleteId] = useState(null);
   const [list, setList] = useState(items);
   useEffect(() => setList(items), [items]);
+  const loading = list === null;
   const load = () => api.get(`/${path}`).then((r) => setList(r.data));
   const submit = async (form) => {
     try {
@@ -144,7 +145,7 @@ function ManagerCard({ title, description, items, columns, fields, path, buildPa
     } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
   };
   const doDelete = async () => {
-    const item = list.find((x) => x.id === deleteId);
+    const item = (list || []).find((x) => x.id === deleteId);
     setDeleteId(null);
     try {
       await api.delete(`/${path}/${item.id}`);
@@ -170,8 +171,9 @@ function ManagerCard({ title, description, items, columns, fields, path, buildPa
         <Button size="sm" onClick={() => { setEditing(null); setOpen(true); }} className="bg-[#D97706] hover:bg-[#B45309]" data-testid={`btn-add-${path}`}><Plus className="h-4 w-4 mr-1.5" />Add</Button>
       </div>
       <div className="divide-y divide-[#EEEDE7] border-t border-[#EEEDE7]">
-        {list.length === 0 && <div className="py-6 text-sm text-muted-foreground text-center">Nothing yet.</div>}
-        {list.map((it) => (
+        {loading && <div className="py-6 text-sm text-muted-foreground text-center inline-flex w-full justify-center items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</div>}
+        {!loading && list.length === 0 && <div className="py-6 text-sm text-muted-foreground text-center">Nothing yet.</div>}
+        {(list || []).map((it) => (
           <div key={it.id} className="flex items-center justify-between py-3" data-testid={`${path}-row-${it.id}`}>
             <div className={`min-w-0 flex items-center gap-2 ${it.active === false ? "opacity-60" : ""}`}>{columns(it)}{it.active === false && <Badge variant="outline" className="shrink-0 text-muted-foreground" data-testid={`inactive-${it.id}`}>Inactive</Badge>}</div>
             <div className="flex items-center gap-1 shrink-0">
@@ -215,8 +217,9 @@ function AccountsTab() {
 
 function FundsTab() {
   const { items } = useCrud("funds");
-  const parentName = Object.fromEntries(items.map((f) => [f.id, f.name]));
-  const parentOptions = [{ value: "none", label: "None (top level)" }, ...items.map((f) => ({ value: f.id, label: f.name }))];
+  const fundList = items || [];
+  const parentName = Object.fromEntries(fundList.map((f) => [f.id, f.name]));
+  const parentOptions = [{ value: "none", label: "None (top level)" }, ...fundList.map((f) => ({ value: f.id, label: f.name }))];
   return (
     <ManagerCard title="Church Funds" description="Track money by purpose, independent of which account holds it. Set a starting balance, and optionally nest a fund inside another."
       items={items} path="funds" label="Fund"
