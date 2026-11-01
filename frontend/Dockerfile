@@ -1,6 +1,6 @@
 # ---- Build the React app ----
 # Node 24 is an LTS release (security support through April 2028). Use LTS versions only.
-FROM node:24-alpine AS build
+FROM node:26-alpine AS build
 
 WORKDIR /app
 
