@@ -1,12 +1,12 @@
 # Runtime dependencies for the Grace Treasury backend — only what server.py imports.
 # Test-only tools are in requirements-dev.txt.
-fastapi==0.161.1
+fastapi==0.163.2
 uvicorn==0.54.0
-python-multipart==0.0.32
-pydantic==2.14.1
-email-validator==2.3.0
+python-multipart==0.0.34
+pydantic==2.14.3
+email-validator==2.4.0
 motor==3.7.1
-pymongo==4.19.0
+pymongo==4.20.0
 APScheduler==3.11.3
 bcrypt==5.0.0
 PyJWT==2.15.1
